@@ -1,0 +1,12 @@
+## Interface: 16001
+## Title: Opcow's Spell Alerts
+## Version: 0.13
+## Notes: Shows a spell's icon and plays a sound when it's usable, when a finisher has enough combo points, or when your debuff falls off the target.
+## Author: Opcow
+## IconTexture: Interface\Icons\Ability_Warrior_Challange
+## AddonCompartmentFunc: OpcowsSpellAlerts_OnAddonCompartmentClick
+## AddonCompartmentFuncOnEnter: OpcowsSpellAlerts_OnAddonCompartmentEnter
+## AddonCompartmentFuncOnLeave: OpcowsSpellAlerts_OnAddonCompartmentLeave
+## SavedVariablesPerCharacter: OpcowsSpellAlertsDB
+OpcowsSpellAlerts.lua
+Config.lua

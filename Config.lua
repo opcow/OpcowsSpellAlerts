@@ -1,0 +1,846 @@
+-- Options window, minimap button and addon compartment entry. Built on first use. Nothing here is
+-- protected, so it all works in combat.
+
+local OSA = OpcowsSpellAlerts
+local ROW_HEIGHT = 20
+local WIDTH = 420
+local ICON = "Interface\\Icons\\Ability_Warrior_Challange"
+-- the kinds in the order the "Alert when" button cycles through them
+local KINDS = { "usable", "combo", "debuff" }
+local POWER_TEXT = { show = "Show it", dim = "Dim it", hide = "Hide it" }
+local KIND_TEXT = { usable = "It's usable", combo = "Combo points reach", debuff = "My debuff falls off" }
+local COND_LABELS = {
+    dead = "Dead", instance = "Instance", party = "Party", raid = "Raid",
+    resting = "Resting", taxi = "Taxi", combat = "Combat", mounted = "Mounted",
+    fireTotem = "Fire totem", earthTotem = "Earth totem", waterTotem = "Water totem", airTotem = "Air totem",
+}
+local COND_DESC = {
+    dead = "dead", instance = "in a dungeon", party = "in a party", raid = "in a raid",
+    resting = "resting", taxi = "on a flight path", combat = "in combat", mounted = "mounted",
+    fireTotem = "a Fire totem is down", earthTotem = "an Earth totem is down",
+    waterTotem = "a Water totem is down", airTotem = "an Air totem is down",
+}
+
+local config
+local minimapButton
+
+local issecretvalue = issecretvalue or function() return false end
+
+local function Trim(s)
+    return (s or ""):match("^%s*(.-)%s*$")
+end
+
+-- widget helpers ---------------------------------------------------------------------------------
+
+local function Label(parent, text, font)
+    local fs = parent:CreateFontString(nil, "ARTWORK", font or "GameFontNormal")
+    fs:SetText(text)
+    fs:SetJustifyH("LEFT")
+    return fs
+end
+
+local function Button(parent, text, width, onClick)
+    local b = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
+    b:SetSize(width, 22)
+    b:SetText(text)
+    b:SetScript("OnClick", onClick)
+    return b
+end
+
+-- text can be a function of the widget, for tooltips that describe the current state
+local function Tooltip(widget, title, text)
+    widget:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText(title)
+        local t = type(text) == "function" and text(self) or text
+        if t then GameTooltip:AddLine(t, 1, 1, 1, true) end
+        GameTooltip:Show()
+    end)
+    widget:SetScript("OnLeave", function() GameTooltip:Hide() end)
+end
+
+local function EditBox(parent, width)
+    local e = CreateFrame("EditBox", nil, parent, "InputBoxTemplate")
+    e:SetSize(width, 20)
+    e:SetAutoFocus(false)
+    return e
+end
+
+local function Check(parent, text, onClick)
+    local c = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
+    c:SetSize(24, 24)
+    c.label = Label(c, text, "GameFontHighlightSmall")
+    c.label:SetPoint("LEFT", c, "RIGHT", 0, 1)
+    c:SetHitRectInsets(0, -100, 0, 0)
+    c:SetScript("OnClick", function(self) onClick(self:GetChecked() and true or false) end)
+    return c
+end
+
+local function Box(parent, bg)
+    local b = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+    b:SetBackdrop({
+        bgFile = bg or "Interface\\ChatFrame\\ChatFrameBackground",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        edgeSize = 12,
+        insets = { left = 3, right = 3, top = 3, bottom = 3 },
+    })
+    if not bg then b:SetBackdropColor(0, 0, 0, 0.5) end
+    b:SetBackdropBorderColor(0.6, 0.6, 0.6)
+    return b
+end
+
+-- a number box: get() gives the value shown, set(n) saves a typed one
+local function NumberBox(parent, width, get, set)
+    local box = EditBox(parent, width)
+    box:SetNumeric(true)
+    box:SetMaxLetters(3)
+    local function Save(self)
+        local n = tonumber(self:GetText())
+        if n then set(n) end
+        OSA.Changed()
+    end
+    box:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+    box:SetScript("OnEditFocusLost", Save)
+    box:SetScript("OnEscapePressed", function(self)
+        self:SetScript("OnEditFocusLost", nil)
+        self:ClearFocus()
+        self:SetScript("OnEditFocusLost", Save)
+        OSA.Changed()
+    end)
+    box.get = get
+    return box
+end
+
+-- shows a number box's value, unless it's being typed in
+local function ShowNumber(box)
+    if not box:HasFocus() then box:SetText(tostring(box.get() or 0)) end
+end
+
+-- a button whose left-click picks the next choice and right-click the one before
+local function Cycle(parent, width, onStep)
+    local b = Button(parent, "", width, nil)
+    b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    b:SetScript("OnClick", function(_, button) onStep(button == "RightButton" and -1 or 1) end)
+    return b
+end
+
+local function Step(list, current, dir)
+    local at = 1
+    for i, v in ipairs(list) do
+        if v == current then at = i end
+    end
+    return list[(at - 1 + dir) % #list + 1]
+end
+
+-- scrolling list of rows with an icon, text and an optional remove button. onDrop, if given, runs
+-- when something is dropped on the list from the cursor.
+local function ScrollList(parent, width, height, onDrop)
+    local box = Box(parent)
+    box:SetSize(width, height)
+    local sf = CreateFrame("ScrollFrame", nil, box, "UIPanelScrollFrameTemplate")
+    sf:SetPoint("TOPLEFT", 4, -4)
+    sf:SetPoint("BOTTOMRIGHT", -26, 4)
+    local child = CreateFrame("Frame", nil, sf)
+    child:SetSize(width - 30, 1)
+    sf:SetScrollChild(child)
+    box.rows = {}
+
+    local function Droppable(f)
+        if not onDrop then return end
+        f:EnableMouse(true)
+        f:SetScript("OnReceiveDrag", function() onDrop() end)
+        f:HookScript("OnMouseUp", function() if GetCursorInfo() then onDrop() end end)
+    end
+    Droppable(box)
+    Droppable(sf)
+
+    local function NewRow(i)
+        local row = CreateFrame("Button", nil, child)
+        row:SetHeight(ROW_HEIGHT)
+        row:SetPoint("TOPLEFT", 0, -(i - 1) * ROW_HEIGHT)
+        row:SetPoint("RIGHT", child, "RIGHT")
+        row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
+        row.sel = row:CreateTexture(nil, "BACKGROUND")
+        row.sel:SetAllPoints()
+        row.sel:SetColorTexture(1, 0.82, 0, 0.25)
+        row.icon = row:CreateTexture(nil, "ARTWORK")
+        row.icon:SetSize(16, 16)
+        row.icon:SetPoint("LEFT", 2, 0)
+        row.remove = CreateFrame("Button", nil, row, "UIPanelCloseButton")
+        row.remove:SetSize(20, 20)
+        row.remove:SetPoint("RIGHT", 0, 0)
+        row.remove:SetScript("OnClick", function() row.item.onRemove() end)
+        Tooltip(row.remove, "Remove", "Remove this alert.")
+        row.text = row:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+        row.text:SetPoint("LEFT", row.icon, "RIGHT", 4, 0)
+        row.text:SetPoint("RIGHT", row.remove, "LEFT", -2, 0)
+        row.text:SetJustifyH("LEFT")
+        row.text:SetWordWrap(false)
+        row:SetScript("OnClick", function(self)
+            if GetCursorInfo() and onDrop then
+                onDrop()
+            elseif self.item.onClick then
+                self.item.onClick()
+            end
+        end)
+        if onDrop then row:SetScript("OnReceiveDrag", function() onDrop() end) end
+        row:SetScript("OnEnter", function(self)
+            if not self.item.spell then return end
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetSpellByID(self.item.spell)
+            GameTooltip:Show()
+        end)
+        row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        box.rows[i] = row
+        return row
+    end
+
+    -- items = { { text, icon, selected, onClick, onRemove, spell }, ... }
+    function box:SetItems(items)
+        for i, item in ipairs(items) do
+            local row = self.rows[i] or NewRow(i)
+            row.item = item
+            row.icon:SetTexture(item.icon)
+            row.icon:SetDesaturated(item.dim and true or false)
+            row.text:SetText(item.text)
+            row.sel:SetShown(item.selected and true or false)
+            row.remove:SetShown(item.onRemove ~= nil)
+            row:Show()
+        end
+        for i = #items + 1, #self.rows do
+            self.rows[i]:Hide()
+        end
+        child:SetHeight(math.max(1, #items * ROW_HEIGHT))
+    end
+
+    return box
+end
+
+-- searchable popup list beside the window
+local function Picker(parent, title, width, height)
+    local p = Box(parent, "Interface\\DialogFrame\\UI-DialogBox-Background")
+    p:SetSize(width, height)
+    p:SetFrameStrata("DIALOG")
+    p:EnableMouse(true)
+    p:SetClampedToScreen(true)
+    p:Hide()
+    p.title = Label(p, title)
+    p.title:SetPoint("TOPLEFT", 10, -9)
+    local close = CreateFrame("Button", nil, p, "UIPanelCloseButton")
+    close:SetSize(24, 24)
+    close:SetPoint("TOPRIGHT", -2, -2)
+    close:SetScript("OnClick", function() p:Hide() end)
+    local searchLabel = Label(p, "Search:", "GameFontHighlightSmall")
+    searchLabel:SetPoint("TOPLEFT", 12, -34)
+    p.search = EditBox(p, width - 76)
+    p.search:SetPoint("LEFT", searchLabel, "RIGHT", 8, 0)
+    p.search:SetScript("OnTextChanged", function() p:Update() end)
+    p.search:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+    p.search:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    p.list = ScrollList(p, width - 16, height - 62)
+    p.list:SetPoint("TOPLEFT", 8, -54)
+
+    function p:Update()
+        if not self.rows then return end
+        local filter = Trim(self.search:GetText()):lower()
+        local items = {}
+        for _, row in ipairs(self.rows) do
+            if filter == "" or row.name:lower():find(filter, 1, true) then table.insert(items, row) end
+        end
+        self.list:SetItems(items)
+    end
+
+    function p:Open(source)
+        self.rows = source()
+        self.search:SetText("")
+        self:ClearAllPoints()
+        self:SetPoint("TOPLEFT", parent, "TOPRIGHT", 2, 0)
+        self:Show()
+        self:Update()
+    end
+
+    return p
+end
+
+-- your spells that can be cast, one row per name, sorted
+local function SpellRows(onPick)
+    local byName, rows = {}, {}
+    if not (C_SpellBook and C_SpellBook.GetNumSpellBookSkillLines) then return rows end
+    pcall(function()
+        local bank = Enum and Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player or 0
+        local spellType = Enum and Enum.SpellBookItemType and Enum.SpellBookItemType.Spell
+        for line = 1, C_SpellBook.GetNumSpellBookSkillLines() do
+            local info = C_SpellBook.GetSpellBookSkillLineInfo(line)
+            if info then
+                for i = info.itemIndexOffset + 1, info.itemIndexOffset + info.numSpellBookItems do
+                    local item = C_SpellBook.GetSpellBookItemInfo(i, bank)
+                    local id, n = item and item.spellID, item and item.name
+                    if type(id) == "number" and not issecretvalue(id) and type(n) == "string"
+                        and not issecretvalue(n) and not item.isPassive
+                        and (spellType == nil or item.itemType == spellType) then
+                        local r = byName[n]
+                        if r then
+                            if id > r.spell then r.spell = id end
+                        else
+                            r = { name = n, text = n, icon = item.iconID, spell = id }
+                            r.onClick = function() onPick(n) end
+                            byName[n] = r
+                            table.insert(rows, r)
+                        end
+                    end
+                end
+            end
+        end
+    end)
+    table.sort(rows, function(a, b) return a.name < b.name end)
+    return rows
+end
+
+-- the window -------------------------------------------------------------------------------------
+
+-- the selected alert's index
+local selected
+
+local function Selected()
+    return selected and OSA.DB().alerts[selected]
+end
+
+local function Add(name)
+    local e = OSA.Book()[name:lower()]
+    if not e then return end
+    local alerts = OSA.DB().alerts
+    table.insert(alerts, { spell = e.name, kind = "usable" })
+    selected = #alerts
+    OSA.Changed()
+end
+
+-- a spell dropped on the list from the spellbook or an action bar
+local function Drop()
+    local kind, _, _, id = GetCursorInfo()
+    if kind ~= "spell" then return end
+    ClearCursor()
+    local name = type(id) == "number" and OSA.SpellName(id)
+    if name then Add(name) end
+end
+
+-- what the alert does, in a few words
+local function Summary(a)
+    local early = (a.early and (", %d sec early"):format(a.early) or "")
+        .. (a.flash and (", shown %d sec"):format(a.flash) or "")
+    local at = (a.atPower and (", %d+ energy"):format(a.atPower) or "") .. early
+    if a.kind == "combo" then return ("at %d combo points"):format(a.cp or 0) .. at end
+    local cp = a.cp and (", %d+ combo points"):format(a.cp) or ""
+    if a.kind == "debuff" then
+        local id = OSA.AlertSpell(a)
+        local d = a.duration or (id and OSA.DebuffDuration(a, id, 5))
+        return (d and ("debuff falls off (%s sec)"):format(d) or "debuff falls off (length unknown)") .. cp .. early
+    end
+    return "usable" .. (a.anytime and " any time" or "") .. cp .. at
+end
+
+-- the debuff length the alert uses when its box is 0
+local function AutoDuration(a)
+    local id = OSA.AlertSpell(a)
+    local saved = a.duration
+    a.duration = nil
+    local d = id and OSA.DebuffDuration(a, id, 5)
+    a.duration = saved
+    return d
+end
+
+local function CreateConfig()
+    local f = CreateFrame("Frame", "OpcowsSpellAlertsConfig", UIParent, "BasicFrameTemplateWithInset")
+    f:SetSize(WIDTH, 764)
+    f:SetPoint("CENTER")
+    f:SetFrameStrata("HIGH")
+    f:SetToplevel(true)
+    f:SetMovable(true)
+    f:SetClampedToScreen(true)
+    f:EnableMouse(true)
+    f:RegisterForDrag("LeftButton")
+    f:SetScript("OnDragStart", f.StartMoving)
+    f:SetScript("OnDragStop", f.StopMovingOrSizing)
+    f:Hide()
+    table.insert(UISpecialFrames, "OpcowsSpellAlertsConfig")
+
+    local title = f.TitleText
+    if not title then
+        title = f:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        title:SetPoint("TOP", 0, -5)
+    end
+    title:SetText("Opcow's Spell Alerts")
+
+    local help = Label(f, "A spell's icon pops up with a sound when it's usable, when a finisher has enough "
+        .. "combo points, or when your debuff falls off the target.", "GameFontHighlightSmall")
+    help:SetPoint("TOPLEFT", 16, -32)
+    help:SetPoint("RIGHT", f, "RIGHT", -16, 0)
+    help:SetWordWrap(true)
+
+    local picker = Picker(f, "Add a spell", 260, 380)
+    local addSpell = Button(f, "Add spell...", 120, function()
+        if picker:IsShown() then picker:Hide() return end
+        picker:Open(function()
+            return SpellRows(function(name)
+                Add(name)
+                picker:Hide()
+            end)
+        end)
+    end)
+    addSpell:SetPoint("TOPLEFT", 14, -66)
+    local dropHint = Label(f, "or drag a spell onto the list", "GameFontDisableSmall")
+    dropHint:SetPoint("LEFT", addSpell, "RIGHT", 8, 0)
+
+    local list = ScrollList(f, WIDTH - 28, 170, Drop)
+    list:SetPoint("TOPLEFT", 14, -92)
+
+    -- the selected alert -------------------------------------------------------------------------
+    local edit = Box(f)
+    edit:SetSize(WIDTH - 28, 354)
+    edit:SetPoint("TOPLEFT", list, "BOTTOMLEFT", 0, -8)
+
+    local none = Label(edit, "Select an alert in the list to change it.", "GameFontDisableSmall")
+    none:SetPoint("CENTER")
+
+    local icon = edit:CreateTexture(nil, "ARTWORK")
+    icon:SetSize(28, 28)
+    icon:SetPoint("TOPLEFT", 10, -10)
+    icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+    local name = Label(edit, "", "GameFontNormalLarge")
+    name:SetPoint("LEFT", icon, "RIGHT", 8, 0)
+
+    local on = Check(edit, "On", function(v)
+        local a = Selected()
+        if a then a.off = not v or nil end
+        OSA.Changed()
+    end)
+    on:SetPoint("TOPRIGHT", -40, -12)
+    Tooltip(on, "On", "Turn this alert off to keep it without it showing.")
+
+    local whenLabel = Label(edit, "Alert when:", "GameFontHighlightSmall")
+    whenLabel:SetPoint("TOPLEFT", 12, -50)
+    local when = Cycle(edit, 170, function(dir)
+        local a = Selected()
+        if not a then return end
+        a.kind = Step(KINDS, a.kind, dir)
+        if a.kind == "combo" then a.cp = a.cp or 0 end
+        OSA.Changed()
+    end)
+    when:SetPoint("LEFT", whenLabel, "RIGHT", 8, 0)
+    Tooltip(when, "Alert when", "Click for the next choice, right-click for the one before.\n\n"
+        .. "|cffffd100It's usable:|r the spell can be cast and is off cooldown, ex: Riposte after a parry.\n"
+        .. "|cffffd100Combo points reach:|r the spell is usable and your target has at least that many "
+        .. "combo points, ex: Eviscerate at 5.\n"
+        .. "|cffffd100My debuff falls off:|r your debuff on the target you're fighting has run out, "
+        .. "ex: Rupture. It's timed from your cast when the game hides auras in combat, so it may "
+        .. "not notice a debuff removed early.")
+
+    local cpLabel = Label(edit, "Combo points at least:", "GameFontHighlightSmall")
+    cpLabel:SetPoint("TOPLEFT", whenLabel, "BOTTOMLEFT", 0, -22)
+    local cp = NumberBox(edit, 30, function()
+        local a = Selected()
+        return a and (a.cp or 0)
+    end, function(n)
+        local a = Selected()
+        if not a then return end
+        n = math.max(0, math.min(5, n))
+        if a.kind == "combo" then a.cp = n else a.cp = n > 0 and n or nil end
+    end)
+    cp:SetMaxLetters(1)
+    cp:SetPoint("LEFT", cpLabel, "RIGHT", 8, 0)
+    local cpHint = Label(edit, "", "GameFontDisableSmall")
+    cpHint:SetPoint("LEFT", cp, "RIGHT", 6, 0)
+    Tooltip(cp, "Combo points", "The icon only shows once your target has at least this many combo points, "
+        .. "1 to 5, ex: Rupture fell off but you have 4. The sound plays when you reach them.\n\n"
+        .. "0 = any.")
+
+    local lastsLabel = Label(edit, "Lasts:", "GameFontHighlightSmall")
+    lastsLabel:SetPoint("LEFT", when, "RIGHT", 10, 0)
+    local lasts = NumberBox(edit, 34, function() return Selected() and Selected().duration or 0 end, function(n)
+        local a = Selected()
+        if a then a.duration = n > 0 and n or nil end
+    end)
+    lasts:SetPoint("LEFT", lastsLabel, "RIGHT", 8, 0)
+    local lastsHint = Label(edit, "", "GameFontDisableSmall")
+    lastsHint:SetPoint("LEFT", lasts, "RIGHT", 6, 0)
+    Tooltip(lasts, "Debuff length", "How many seconds the debuff lasts, used when the game hides auras in "
+        .. "combat. 0 reads it from the spell's tooltip, or from the debuff itself when it can.")
+
+    -- usable alerts only: by default they wait for a fight, or a spell that's always usable would always show
+    local anytime = Check(edit, "Any time", function(v)
+        local a = Selected()
+        if a then a.anytime = v or nil end
+        OSA.Changed()
+    end)
+    anytime:SetPoint("LEFT", when, "RIGHT", 8, 0)
+    Tooltip(anytime, "Any time", "Show the icon whenever the spell is ready, ex: Sprint coming off "
+        .. "cooldown while you travel.\n\nUnchecked, it only shows in combat or while you target "
+        .. "something you can attack, so spells that are almost always usable don't sit on screen.")
+
+    -- the conditions, as in Buff Reminder: each check cycles off, hide while true, hide while false
+    local condTitle = Label(edit, "Hide the icon while:", "GameFontHighlightSmall")
+    condTitle:SetPoint("TOPLEFT", cpLabel, "BOTTOMLEFT", 0, -16)
+    local condHint = Label(edit, "click to cycle: off, while true, |cffff4040while false|r", "GameFontDisableSmall")
+    condHint:SetPoint("LEFT", condTitle, "RIGHT", 8, 0)
+    local condChecks = {}
+    for i, key in ipairs(OSA.CONDITIONS) do
+        local c = Check(edit, COND_LABELS[key], function() end)
+        c:SetPoint("TOPLEFT", condTitle, "BOTTOMLEFT", ((i - 1) % 4) * 96 - 4, -2 - math.floor((i - 1) / 4) * 22)
+        c:SetHitRectInsets(0, -60, 0, 0)
+        function c:SetState(s)
+            self.state = s
+            self:SetChecked(s ~= 0)
+            local red = s == 2
+            local tex = self:GetCheckedTexture()
+            if tex then tex:SetVertexColor(1, red and 0.2 or 1, red and 0.2 or 1) end
+            self.label:SetText(red and ("|cffff4040Not|r " .. COND_LABELS[key]) or COND_LABELS[key])
+        end
+        c:SetScript("OnClick", function()
+            local a = Selected()
+            if not a then return end
+            local conds = OSA.Conds(a)
+            conds[key] = ((conds[key] or 0) + 1) % 3
+            OSA.Changed()
+        end)
+        Tooltip(c, COND_LABELS[key], function(self)
+            local s = self.state
+            local text = s == 0 and "Ignored."
+                or ("Hide the icon while " .. (s == 2 and "not " or "") .. COND_DESC[key] .. ".")
+            return text .. "\n|cff808080Click to change.|r"
+        end)
+        condChecks[key] = c
+    end
+
+    local soundLabel = Label(edit, "Sound:", "GameFontHighlightSmall")
+    soundLabel:SetPoint("TOPLEFT", condTitle, "BOTTOMLEFT", 0, -82)
+    local soundNames = { "off" }
+    for _, s in ipairs(OSA.SOUNDS) do table.insert(soundNames, s.name) end
+    local sound = Cycle(edit, 100, function(dir)
+        local a = Selected()
+        if not a then return end
+        a.sound = Step(soundNames, a.sound or "ping", dir)
+        OSA.PlayAlertSound(a, true)
+        OSA.Changed()
+    end)
+    sound:SetPoint("LEFT", soundLabel, "RIGHT", 8, 0)
+    Tooltip(sound, "Sound", "Played once each time the alert is ready: the spell is off cooldown, or the "
+        .. "debuff has fallen off. Not when the icon shows early. Click for the next sound, right-click "
+        .. "for the one before.")
+    local play = Button(edit, "Play", 60, function()
+        local a = Selected()
+        if a then OSA.PlayAlertSound(a, true) end
+    end)
+    play:SetPoint("LEFT", sound, "RIGHT", 4, 0)
+
+    local flashLabel = Label(edit, "Show for:", "GameFontHighlightSmall")
+    flashLabel:SetPoint("LEFT", play, "RIGHT", 14, 0)
+    local flashBox = NumberBox(edit, 34, function() return Selected() and Selected().flash or 0 end, function(n)
+        local a = Selected()
+        if a then a.flash = n > 0 and math.max(1, n) or nil end
+    end)
+    flashBox:SetPoint("LEFT", flashLabel, "RIGHT", 8, 0)
+    local flashHint = Label(edit, "sec", "GameFontDisableSmall")
+    flashHint:SetPoint("LEFT", flashBox, "RIGHT", 6, 0)
+    Tooltip(flashBox, "Show for", "When the alert is ready, the icon fades in, shows for this many seconds "
+        .. "and fades out, ex: Sprint coming off cooldown. It shows again the next time the alert comes on.\n\n"
+        .. "0 = it stays while the alert is on.")
+
+    local powerLabel = Label(edit, "Short of energy:", "GameFontHighlightSmall")
+    powerLabel:SetPoint("TOPLEFT", soundLabel, "BOTTOMLEFT", 0, -22)
+    local power = Cycle(edit, 100, function(dir)
+        local a = Selected()
+        if not a then return end
+        a.power = Step(OSA.POWER_MODES, a.power or "dim", dir)
+        OSA.Changed()
+    end)
+    power:SetPoint("LEFT", powerLabel, "RIGHT", 8, 0)
+    Tooltip(power, "Short of energy", "What the icon does once the alert's criterion is met but the spell "
+        .. "still needs more energy, rage or mana, ex: 5 combo points with 20 energy.\n\n"
+        .. "|cffffd100Show it:|r the icon shows as usual.\n"
+        .. "|cffffd100Dim it:|r the icon shows dimmed and grey until you can cast it.\n"
+        .. "|cffffd100Hide it:|r the icon waits until you have the energy, and the sound plays then.\n\n"
+        .. "Click for the next choice, right-click for the one before.")
+
+    local atLabel = Label(edit, "Only with at least:", "GameFontHighlightSmall")
+    atLabel:SetPoint("TOPLEFT", powerLabel, "BOTTOMLEFT", 0, -22)
+    local atPower = NumberBox(edit, 34, function() return Selected() and Selected().atPower or 0 end, function(n)
+        local a = Selected()
+        if a then a.atPower = n > 0 and n or nil end
+    end)
+    atPower:SetPoint("LEFT", atLabel, "RIGHT", 8, 0)
+    local atHint = Label(edit, "energy, rage or mana, 0 = any", "GameFontDisableSmall")
+    atHint:SetPoint("LEFT", atPower, "RIGHT", 6, 0)
+    Tooltip(atPower, "Minimum energy", "The icon only shows once you have at least this much energy, rage "
+        .. "or mana, ex: 90 for a spell you use to dump energy before it caps. The sound plays when you "
+        .. "reach it.\n\n0 = no minimum.")
+
+    -- placed under the energy rows, or under the sound for a debuff alert, which has none
+    local earlyLabel = Label(edit, "Show early:", "GameFontHighlightSmall")
+    local earlyBox = NumberBox(edit, 34, function() return Selected() and Selected().early or 0 end, function(n)
+        local a = Selected()
+        if a then a.early = n > 0 and n or nil end
+    end)
+    earlyBox:SetPoint("LEFT", earlyLabel, "RIGHT", 8, 0)
+    local earlyHint = Label(edit, "", "GameFontDisableSmall")
+    earlyHint:SetPoint("LEFT", earlyBox, "RIGHT", 6, 0)
+    Tooltip(earlyBox, "Show early", function()
+        local a = Selected()
+        if a and a.kind == "debuff" then
+            return "Show the icon this many seconds before your debuff falls off, shaded, with a countdown. "
+                .. "The sound plays when it falls off.\n\nThe countdown needs the debuff's length, so a debuff "
+                .. "only the Cooldown Manager follows can't show early unless its length is known.\n\n"
+                .. "0 = only once it's fallen off."
+        end
+        return "Show the icon this many seconds before the spell comes off cooldown, shaded, with a "
+            .. "countdown. The sound plays when it's ready.\n\n0 = only once it's off cooldown."
+    end)
+
+    local up = Button(edit, "Move up", 80, function()
+        local alerts = OSA.DB().alerts
+        if not selected or selected <= 1 then return end
+        alerts[selected], alerts[selected - 1] = alerts[selected - 1], alerts[selected]
+        selected = selected - 1
+        OSA.Changed()
+    end)
+    up:SetPoint("BOTTOMLEFT", 10, 10)
+    local down = Button(edit, "Move down", 90, function()
+        local alerts = OSA.DB().alerts
+        if not selected or selected >= #alerts then return end
+        alerts[selected], alerts[selected + 1] = alerts[selected + 1], alerts[selected]
+        selected = selected + 1
+        OSA.Changed()
+    end)
+    down:SetPoint("LEFT", up, "RIGHT", 4, 0)
+    Tooltip(down, "List order", "Moves it in this list. Where the icons show is set by dragging them while "
+        .. "they're unlocked.")
+    Tooltip(up, "List order", "Moves it in this list. Where the icons show is set by dragging them while "
+        .. "they're unlocked.")
+
+    local iconSizeLabel = Label(edit, "Icon size:", "GameFontHighlightSmall")
+    iconSizeLabel:SetPoint("LEFT", down, "RIGHT", 14, 0)
+    local iconSize = NumberBox(edit, 34, function() return Selected() and Selected().size or 0 end, function(n)
+        local a = Selected()
+        if a then a.size = n > 0 and math.max(10, math.min(200, n)) or nil end
+    end)
+    iconSize:SetPoint("LEFT", iconSizeLabel, "RIGHT", 8, 0)
+    local iconSizeHint = Label(edit, "0 = default", "GameFontDisableSmall")
+    iconSizeHint:SetPoint("LEFT", iconSize, "RIGHT", 6, 0)
+    Tooltip(iconSize, "Icon size", "This alert's own icon size, 10 to 200. Icons of different sizes snapped "
+        .. "together line up by their centres, or by an edge if you drop them that way.\n\n0 = the icon size "
+        .. "under Options.")
+
+    local editWidgets = { icon, name, on, whenLabel, when, cpLabel, cp, cpHint, condTitle, condHint, soundLabel, sound,
+        play, flashLabel, flashBox, flashHint, earlyLabel, earlyBox, earlyHint, up, down, iconSizeLabel, iconSize,
+        iconSizeHint }
+    -- shown only for alerts that need the spell castable
+    local powerWidgets = { powerLabel, power, atLabel, atPower, atHint }
+
+    -- options ------------------------------------------------------------------------------------
+    local optionsLabel = Label(f, "Options")
+    optionsLabel:SetPoint("TOPLEFT", edit, "BOTTOMLEFT", 2, -12)
+
+    local unlock = Button(f, "Unlock icons", 120, function()
+        local db = OSA.DB()
+        db.unlocked = not db.unlocked or nil
+        OSA.Changed()
+    end)
+    unlock:SetPoint("TOPLEFT", optionsLabel, "BOTTOMLEFT", -2, -8)
+    Tooltip(unlock, "Move the icons", "Unlocked, every alert's icon shows so it can be placed.\n\n"
+        .. "Drag an icon to move it with the icons it's snapped to.\n"
+        .. "Shift-drag to pull it away on its own.\n"
+        .. "Drop it touching other icons, on any side, to snap to them.\n\n"
+        .. "Lock them again when you're done. /osa reset puts them all back in one row.")
+
+    local test = Button(f, "Test", 70, function() OSA.Test() end)
+    test:SetPoint("LEFT", unlock, "RIGHT", 4, 0)
+    Tooltip(test, "Test", "Show every alert's icon for 3 seconds, with the first one's sound.")
+
+    local sizeLabel = Label(f, "Icon size:", "GameFontHighlightSmall")
+    sizeLabel:SetPoint("LEFT", test, "RIGHT", 14, 0)
+    local size = NumberBox(f, 34, function() return OSA.DB().size end, function(n)
+        OSA.DB().size = math.min(200, n)
+    end)
+    size:SetPoint("LEFT", sizeLabel, "RIGHT", 8, 0)
+    local sizeHint = Label(f, "0 = " .. OSA.SIZE, "GameFontDisableSmall")
+    sizeHint:SetPoint("LEFT", size, "RIGHT", 6, 0)
+    Tooltip(size, "Icon size", "The size of every icon that doesn't have its own. 0 = " .. OSA.SIZE .. ".")
+
+    local minimap = Check(f, "Minimap button", function(v)
+        OSA.DB().minimap.hide = not v or nil
+        OSA.UpdateMinimap()
+    end)
+    minimap:SetPoint("TOPLEFT", unlock, "BOTTOMLEFT", 0, -8)
+    local debug = Check(f, "Debug messages", function(v)
+        OSA.DB().debug = v or nil
+    end)
+    debug:SetPoint("LEFT", minimap, "LEFT", 200, 0)
+
+    local probeHint = Label(f, "Alert not firing? Type /osa probe <spell> in and out of combat.", "GameFontDisableSmall")
+    probeHint:SetPoint("BOTTOMLEFT", 16, 12)
+
+    function f:Refresh()
+        local db = OSA.DB()
+        local alerts = db.alerts
+        if selected and not alerts[selected] then selected = nil end
+        local items = {}
+        for i, a in ipairs(alerts) do
+            local id = OSA.AlertSpell(a)
+            local text = a.spell .. "  |cff999999" .. Summary(a) .. "|r"
+            if not id then text = text .. "  |cffff6060not in your spellbook|r" end
+            if a.off then text = "|cff808080" .. a.spell .. "  " .. Summary(a) .. " (off)|r" end
+            table.insert(items, {
+                text = text, icon = id and OSA.SpellIcon(id) or 134400, spell = id, dim = a.off,
+                selected = i == selected,
+                onClick = function()
+                    selected = i
+                    f:Refresh()
+                end,
+                onRemove = function()
+                    table.remove(alerts, i)
+                    if selected == i then selected = nil elseif selected and selected > i then selected = selected - 1 end
+                    OSA.Changed()
+                end,
+            })
+        end
+        list:SetItems(items)
+
+        local a = Selected()
+        none:SetShown(a == nil)
+        for _, w in ipairs(editWidgets) do w:SetShown(a ~= nil) end
+        for key, c in pairs(condChecks) do
+            c:SetShown(a ~= nil)
+            if a then c:SetState(OSA.Conds(a)[key] or 0) end
+        end
+        lastsLabel:SetShown(a ~= nil and a.kind == "debuff")
+        lasts:SetShown(a ~= nil and a.kind == "debuff")
+        lastsHint:SetShown(a ~= nil and a.kind == "debuff")
+        anytime:SetShown(a ~= nil and a.kind == "usable")
+        for _, w in ipairs(powerWidgets) do w:SetShown(a ~= nil and a.kind ~= "debuff") end
+        if a then
+            local id = OSA.AlertSpell(a)
+            icon:SetTexture(id and OSA.SpellIcon(id) or 134400)
+            name:SetText(a.spell)
+            on:SetChecked(not a.off)
+            anytime:SetChecked(a.anytime and true or false)
+            when:SetText(KIND_TEXT[a.kind] or a.kind)
+            sound:SetText(a.sound or "ping")
+            power:SetText(POWER_TEXT[a.power or "dim"])
+            ShowNumber(cp)
+            cpHint:SetText("on your target, 0 = any")
+            ShowNumber(atPower)
+            ShowNumber(earlyBox)
+            ShowNumber(flashBox)
+            earlyLabel:ClearAllPoints()
+            earlyLabel:SetPoint("TOPLEFT", a.kind == "debuff" and soundLabel or atLabel, "BOTTOMLEFT", 0, -22)
+            earlyHint:SetText(a.kind == "debuff" and "sec before it falls off, 0 = off"
+                or "sec before its cooldown ends, 0 = off")
+            ShowNumber(lasts)
+            ShowNumber(iconSize)
+            iconSizeHint:SetText("0 = default (" .. (db.size > 0 and db.size or OSA.SIZE) .. ")")
+            local auto = a.kind == "debuff" and AutoDuration(a)
+            lastsHint:SetText(a.duration and "sec" or (auto and ("sec, 0 = auto (" .. auto .. ")") or "sec, 0 = auto"))
+            up:SetEnabled(selected > 1)
+            down:SetEnabled(selected < #alerts)
+        end
+
+        unlock:SetText(db.unlocked and "Lock icons" or "Unlock icons")
+        ShowNumber(size)
+        minimap:SetChecked(not db.minimap.hide)
+        debug:SetChecked(db.debug and true or false)
+    end
+
+    f:SetScript("OnShow", function(self) self:Refresh() end)
+    return f
+end
+
+function OSA.RefreshConfig()
+    if config and config:IsShown() then config:Refresh() end
+end
+
+function OSA.ToggleConfig()
+    config = config or CreateConfig()
+    config:SetShown(not config:IsShown())
+end
+
+-- addon compartment (the addons button by the minimap) -------------------------------------------
+
+function OpcowsSpellAlerts_OnAddonCompartmentClick()
+    OSA.ToggleConfig()
+end
+
+function OpcowsSpellAlerts_OnAddonCompartmentEnter(_, button)
+    GameTooltip:SetOwner(button, "ANCHOR_LEFT")
+    GameTooltip:SetText("Opcow's Spell Alerts")
+    GameTooltip:AddLine("Click: options", 1, 1, 1)
+    GameTooltip:AddLine(#OSA.DB().alerts .. " alerts", 0.5, 0.5, 0.5)
+    GameTooltip:Show()
+end
+
+function OpcowsSpellAlerts_OnAddonCompartmentLeave()
+    GameTooltip:Hide()
+end
+
+-- minimap button, drag to move it around the minimap ---------------------------------------------
+
+local function PlaceMinimapButton()
+    local angle = math.rad(OSA.DB().minimap.angle or 200)
+    -- on the edge of the minimap, whatever size it is
+    local w, h = Minimap:GetWidth() / 2 + 5, Minimap:GetHeight() / 2 + 5
+    minimapButton:ClearAllPoints()
+    minimapButton:SetPoint("CENTER", Minimap, "CENTER", math.cos(angle) * w, math.sin(angle) * h)
+end
+
+local function CreateMinimapButton()
+    local b = CreateFrame("Button", "OpcowsSpellAlertsMinimapButton", Minimap)
+    -- same layout as LibDBIcon so it matches other addons' buttons
+    b:SetSize(31, 31)
+    b:SetFrameStrata("MEDIUM")
+    b:SetFrameLevel(8)
+    b:RegisterForClicks("AnyUp")
+    b:RegisterForDrag("LeftButton")
+    b:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+    local bg = b:CreateTexture(nil, "BACKGROUND")
+    bg:SetSize(24, 24)
+    bg:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
+    bg:SetPoint("CENTER")
+    local icon = b:CreateTexture(nil, "ARTWORK")
+    icon:SetSize(18, 18)
+    icon:SetTexture(ICON)
+    icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    icon:SetPoint("CENTER")
+    -- round it off, or the square icon's corners show outside the border
+    if b.CreateMaskTexture then
+        local mask = b:CreateMaskTexture()
+        mask:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+        mask:SetAllPoints(icon)
+        icon:AddMaskTexture(mask)
+    end
+    local border = b:CreateTexture(nil, "OVERLAY")
+    border:SetSize(50, 50)
+    border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+    border:SetPoint("TOPLEFT")
+
+    b:SetScript("OnClick", function() OSA.ToggleConfig() end)
+    b:SetScript("OnEnter", function(self) OpcowsSpellAlerts_OnAddonCompartmentEnter(nil, self) end)
+    b:SetScript("OnLeave", OpcowsSpellAlerts_OnAddonCompartmentLeave)
+    b:SetScript("OnDragStart", function(self)
+        GameTooltip:Hide()
+        self:SetScript("OnUpdate", function()
+            local mx, my = Minimap:GetCenter()
+            local cx, cy = GetCursorPosition()
+            local scale = Minimap:GetEffectiveScale()
+            OSA.DB().minimap.angle = math.deg(math.atan2(cy / scale - my, cx / scale - mx))
+            PlaceMinimapButton()
+        end)
+    end)
+    b:SetScript("OnDragStop", function(self) self:SetScript("OnUpdate", nil) end)
+    return b
+end
+
+function OSA.UpdateMinimap()
+    if not Minimap then return end
+    local hide = OSA.DB().minimap.hide
+    if hide and not minimapButton then return end
+    minimapButton = minimapButton or CreateMinimapButton()
+    PlaceMinimapButton()
+    minimapButton:SetShown(not hide)
+end
