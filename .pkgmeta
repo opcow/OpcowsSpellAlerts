@@ -1,0 +1,7 @@
+package-as: OpcowsSpellAlerts
+
+manual-changelog: CHANGELOG.md
+
+ignore:
+  - docs
+  - .claude
