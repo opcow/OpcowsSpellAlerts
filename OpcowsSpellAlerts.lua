@@ -31,18 +31,14 @@ local SOUNDS = {
     { name = "ready", kit = "READY_CHECK", id = 8960 },
     { name = "alarm", kit = "ALARM_CLOCK_WARNING_3", id = 12889 },
 }
--- icon border colours by kind
 -- what an alert does while the spell waits on energy, rage or mana: show it, dim it or hide it
 local POWER_MODES = { "show", "dim", "hide" }
 -- the alpha of a dimmed icon
 local DIM = 0.45
-local BORDER = { usable = { 1, 0.82, 0 }, combo = { 1, 0.5, 0 }, debuff = { 1, 0.1, 0.1 } }
--- the border of an icon whose spell was clicked and waits for the next swing
-local QUEUED_BORDER = { 1, 1, 1 }
 -- the conditions an alert can be hidden by, as in Buff Reminder. Each alert's conds[key] is
 -- 0 = ignored, 1 = hide the icon while true, 2 = hide the icon while false.
 local CONDITIONS = { "dead", "instance", "party", "raid", "resting", "taxi", "combat", "mounted",
-    "fireTotem", "earthTotem", "waterTotem", "airTotem" }
+    "target", "enemy", "friendly", "fireTotem", "earthTotem", "waterTotem", "airTotem" }
 local DEFAULT_CONDS = { dead = 1, taxi = 1, mounted = 1 }
 -- the totem conditions: [key] = { totem slot, element as spell descriptions name it }
 local TOTEMS = {
@@ -258,6 +254,13 @@ local function UpdateStatus()
     Flag("taxi", UnitOnTaxi, "player")
     Flag("mounted", IsMounted)
     status.combat = InCombat() and true or false
+    -- the target: any, a living one you can attack, a friendly one
+    local exists = Bool(UnitExists("target"))
+    if exists ~= nil then
+        status.target = exists
+        status.enemy = exists and Attackable() or false
+        if not exists then status.friendly = false else Flag("friendly", UnitIsFriend, "player", "target") end
+    end
     if IsInInstance then
         local ok, _, kind = pcall(IsInInstance)
         if ok and not issecretvalue(kind) then status.instance = kind == "party" end
@@ -424,14 +427,48 @@ local function OnCooldownFlag(id, key)
     return on
 end
 
+-- true when the game says the spell's base cooldown is no longer than the GCD
+local function NoOwnCooldown(id)
+    if not GetSpellBaseCooldown then return false end
+    local ok, ms = pcall(GetSpellBaseCooldown, id)
+    ms = ok and Num(ms)
+    return ms ~= nil and ms <= GCD * 1000
+end
+
+-- the spell whose cooldown is the global cooldown
+local GCD_SPELL = 61304
+
+-- true when a readable cooldown is only the global cooldown: the game flags it, or it's the same
+-- as the GCD spell's
+local function IsGCD(id, start, dur)
+    local info = CooldownInfo(id)
+    if info and Flag(info.isOnGCD) == true then return true end
+    local gs, gd = RawCooldown(GCD_SPELL)
+    gs, gd = Num(gs), Num(gd)
+    return gs ~= nil and gd ~= nil and gd > 0 and math.abs(gs - start) < 0.05 and math.abs(gd - dur) < 0.05
+end
+
+-- when you last cast a spell with a cooldown of its own (not a wand shot), see OnCast
+local cooldownCastAt
+
+-- true when such a cast came within half a second of the time
+local function CooldownCastNear(t)
+    return cooldownCastAt ~= nil and math.abs(cooldownCastAt - t) < 0.5
+end
+
 -- when the spell's cooldown ends, false when it's off cooldown, nil when unknown
 local function CooldownEnds(a, id)
+    -- a spell with no cooldown of its own can only be waiting on the GCD, ex: one started by a wand
+    -- shot, which the game's flags don't always call the GCD
+    if NoOwnCooldown(id) then return false end
     local now = GetTime()
     local key = a.spell:lower()
     local start, dur = RawCooldown(id)
     start, dur = Num(start), Num(dur)
     if start and dur then
         if start == 0 or dur <= GCD or start + dur <= now then return false end
+        -- only the GCD, though longer than 1.5 sec, ex: started by a wand shot
+        if IsGCD(id, start, dur) then return false end
         return start + dur
     end
     -- from your own cast of it: false once it's over
@@ -445,6 +482,10 @@ local function CooldownEnds(a, id)
     if on == true then
         onSince[key] = onSince[key] or now
         if cast then return cast end
+        -- A lockout the game doesn't call the GCD, ex: ~1.1 sec after each wand shot. Until it's
+        -- run longer than a GCD it's taken for one, unless you just cast a spell with a cooldown of
+        -- its own, which may share it (the shocks).
+        if now - onSince[key] < GCD and not CooldownCastNear(onSince[key]) then return false end
         -- put on cooldown by another spell: guess its end from its own base cooldown
         local base = BaseCooldown(id)
         if base and onSince[key] + base > now then return onSince[key] + base end
@@ -649,7 +690,8 @@ local function UsableState(a, id)
 end
 
 local function ComboState(a, id)
-    if not Attackable() then return false end
+    -- no target needed: the target conditions can still ask for one
+    if not a.anytime and not Attackable() then return false end
     local cp = Num(ComboPoints())
     if not cp or cp < (a.cp or 0) then return false end
     if not EnoughPower(a) then return false end
@@ -1248,13 +1290,38 @@ local function FlashAlpha(len, t)
     return 1
 end
 
+-- the action bar button's icon frame and the mask that rounds the icon's corners to fit it
+local ICON_FRAME, ICON_MASK = "UI-HUD-ActionBar-IconFrame", "UI-HUD-ActionBar-IconFrame-Mask"
+
+local function HasAtlas(name)
+    return C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(name) ~= nil or false
+end
+
 local function MakeIcon(i)
-    local f = CreateFrame("Frame", nil, holder, "BackdropTemplate")
-    f:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 2 })
+    local f = CreateFrame("Frame", nil, holder)
     f.tex = f:CreateTexture(nil, "ARTWORK")
-    f.tex:SetPoint("TOPLEFT", 2, -2)
-    f.tex:SetPoint("BOTTOMRIGHT", -2, 2)
     f.tex:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+    -- the action bar button's thin dark frame with rounded corners, the icon cut to fit inside it.
+    -- Without that art: a thin black edge.
+    local mask
+    if HasAtlas(ICON_FRAME) then
+        f.tex:SetAllPoints()
+        f.edge = f:CreateTexture(nil, "OVERLAY", nil, 2)
+        f.edge:SetAtlas(ICON_FRAME)
+        f.edge:SetAllPoints()
+        if HasAtlas(ICON_MASK) and f.tex.AddMaskTexture and f.CreateMaskTexture then
+            mask = f:CreateMaskTexture()
+            mask:SetAtlas(ICON_MASK)
+            mask:SetAllPoints(f.tex)
+            f.tex:AddMaskTexture(mask)
+        end
+    else
+        f.edge = f:CreateTexture(nil, "BACKGROUND")
+        f.edge:SetAllPoints()
+        f.edge:SetColorTexture(0, 0, 0, 1)
+        f.tex:SetPoint("TOPLEFT", 1, -1)
+        f.tex:SetPoint("BOTTOMRIGHT", -1, 1)
+    end
     f.count = f:CreateFontString(nil, "OVERLAY", "NumberFontNormalLarge")
     f.count:SetPoint("BOTTOMRIGHT", -3, 3)
     -- shown early: a shade over the icon and the seconds left on the cooldown
@@ -1264,12 +1331,17 @@ local function MakeIcon(i)
     f.timer = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     f.timer:SetPoint("CENTER")
     f.timer:SetTextColor(1, 1, 1)
-    -- clicked and waiting for the next swing: lit like the action bar's button, with a white border
+    -- clicked and waiting for the next swing: lit like the action bar's button
     f.queued = f:CreateTexture(nil, "OVERLAY", nil, 1)
     f.queued:SetAllPoints(f.tex)
     f.queued:SetTexture("Interface\\Buttons\\CheckButtonHilight")
     f.queued:SetBlendMode("ADD")
     f.queued:Hide()
+    -- the shade and the light take the icon's rounded corners too
+    if mask then
+        f.shade:AddMaskTexture(mask)
+        f.queued:AddMaskTexture(mask)
+    end
     -- takes the mouse only while unlocked, to be dragged
     f:EnableMouse(false)
     f:RegisterForDrag("LeftButton")
@@ -1311,6 +1383,52 @@ local function MakeHolder()
     ApplyLayout()
 end
 
+-- [alert] = its last state as text, for the debug trace
+local tracedState = {}
+-- the most lines the trace keeps, the oldest go first
+local TRACE_MAX = 1000
+
+-- debug: when an alert's state changes, print what decided it, so a hidden icon can be explained
+local function TraceState(a, on)
+    local text = on == nil and "secret" or tostring(on)
+    if tracedState[a] == text then return end
+    tracedState[a] = text
+    local id = AlertSpell(a)
+    local parts = { ("%s -> %s"):format(a.spell, on == nil and "only the game knows (secret usable)"
+        or on and "shown" or "hidden") }
+    if a.off then table.insert(parts, "turned off") end
+    if Suppressed(a) then
+        for _, k in ipairs(CONDITIONS) do
+            local v, c = status[k], Conds(a)[k]
+            if (v and c == 1) or (not v and c == 2) then table.insert(parts, "hidden by condition " .. k) end
+        end
+    end
+    if id then
+        local u, noPower = RawUsable(id)
+        local info = CooldownInfo(id) or {}
+        local okB, base = pcall(GetSpellBaseCooldown or error, id)
+        local gInfo = CooldownInfo(GCD_SPELL) or {}
+        local start, dur = RawCooldown(id)
+        local ends = CooldownEnds(a, id)
+        table.insert(parts, ("usable %s, no power %s, glow %s"):format(Show(u), Show(noPower),
+            tostring(glowing[a.spell:lower()] or false)))
+        table.insert(parts, ("cooldown %s/%s, active %s, enabled %s, on GCD %s (cached %s), base %s, GCD active %s, we say %s")
+            :format(Show(start), Show(dur), Show(info.isActive), Show(info.isEnabled), Show(info.isOnGCD),
+                tostring(gcdFlag[id]), okB and Show(base) or "?", Show(gInfo.isActive),
+                ends == false and "ready" or ends == nil and "unknown" or ends == math.huge and "on cooldown"
+                    or ("%.1fs left"):format(ends - GetTime())))
+    end
+    table.insert(parts, ("combat %s, enemy target %s, combo points %s, power %s, enough power %s, no target needed %s")
+        :format(tostring(InCombat()), tostring(Attackable()), Show(ComboPoints()), Show(PlayerPower()),
+            tostring(EnoughPower(a)), tostring(a.anytime or false)))
+    -- kept in the saved variables, not chat, as there's too much to read there. The game writes it
+    -- to WTF\...\SavedVariables\OpcowsSpellAlerts.lua on /reload or logout.
+    local db = DB()
+    if type(db.trace) ~= "table" then db.trace = {} end
+    table.insert(db.trace, ("%.1f %s"):format(GetTime(), table.concat(parts, "; ")))
+    while #db.trace > TRACE_MAX do table.remove(db.trace, 1) end
+end
+
 function OSA.Update()
     if not holder then return end
     local db = DB()
@@ -1321,6 +1439,7 @@ function OSA.Update()
     local showing = {}
     for _, a in ipairs(db.alerts) do
         local on, secret, dim = State(a)
+        if db.debug and not preview then TraceState(a, on) end
         if preview then on, secret, dim = true, nil, nil end
         -- the sound plays when the alert is ready, not when it shows early
         local ready = on == true and not early[a]
@@ -1371,8 +1490,6 @@ function OSA.Update()
             f:SetPoint("CENTER", anchors[bi], "CENTER", p.x, p.y)
             f:EnableMouse(db.unlocked and true or false)
             f.tex:SetTexture(id and SpellIcon(id) or 134400)
-            local c = s.queued and QUEUED_BORDER or BORDER[a.kind] or BORDER.usable
-            f:SetBackdropBorderColor(c[1], c[2], c[3])
             f.queued:SetShown(s.queued and true or false)
             if s.queuedSecret ~= nil and f.queued.SetAlphaFromBoolean
                 and pcall(f.queued.SetAlphaFromBoolean, f.queued, s.queuedSecret, 1, 0) then
@@ -1421,6 +1538,15 @@ end
 local function OnCast(spellID)
     local key = KeyOf(spellID)
     if not key then return end
+    -- a spell with a cooldown of its own, for telling a shared cooldown from a GCD. Not the wand,
+    -- whose shot may have a base cooldown, its speed.
+    local auto = false
+    if IsAutoRepeatSpell then
+        local ok, v = pcall(IsAutoRepeatSpell, SpellName(spellID) or "")
+        auto = ok and Bool(v) == true
+    end
+    local id = Num(spellID)
+    if not auto and key ~= "shoot" and id and BaseCooldown(id) then cooldownCastAt = GetTime() end
     for _, a in ipairs(DB().alerts) do
         if a.spell:lower() == key then
             local id = AlertSpell(a) or spellID
@@ -1546,6 +1672,13 @@ local function ProbeSpell(name)
         Show(info.isActive), Show(info.isEnabled), Show(info.isOnGCD), tostring(gcdFlag[e.id]), zero,
         ends == false and "ready" or ends == nil and "unknown" or ends == math.huge and "on cooldown, end unknown"
             or ("on cooldown, %.1fs left"):format(ends - GetTime())))
+    local gs, gd = RawCooldown(GCD_SPELL)
+    local wandOk, wand = false, nil
+    if IsAutoRepeatSpell then wandOk, wand = pcall(IsAutoRepeatSpell, "Shoot") end
+    local gInfo = CooldownInfo(GCD_SPELL) or {}
+    Print(("  global cooldown: start %s length %s, active %s; wand shooting %s; own cooldown %s"):format(
+        Show(gs), Show(gd), Show(gInfo.isActive), wandOk and Show(wand) or "unknown",
+        NoOwnCooldown(e.id) and "no" or "yes or unknown"))
     local queued, queuedSecret = Queued(e.id)
     Print(("  waiting for the next swing: %s"):format(queuedSecret ~= nil and "secret" or tostring(queued)))
     local up, expires, duration = ReadDebuff(a)
@@ -1595,7 +1728,9 @@ local function Describe(i, a)
         if a.early then text = text .. ", shows " .. a.early .. " sec before it falls off" end
     end
     if a.kind == "usable" then
-        text = text .. (a.anytime and ", any time" or ", in combat or with a target")
+        text = text .. (a.anytime and ", no target needed" or ", in combat or with an enemy target")
+    elseif a.kind == "combo" then
+        text = text .. (a.anytime and ", no target needed" or ", with an enemy target")
     end
     if a.kind ~= "debuff" then
         if a.atPower then text = text .. ", at " .. a.atPower .. "+ energy" end
@@ -1632,7 +1767,9 @@ local HELP = {
     "/osa early <n> <sec|off> - show alert n with a countdown this many seconds before its cooldown ends, "
         .. "or before its debuff falls off",
     "/osa flash <n> <sec|off> - show alert n for only this many seconds when it comes on, fading in and out",
-    "/osa anytime <n> on|off - let a usable alert show out of combat with no target, ex: Sprint",
+    "/osa anytime <n> on|off - no target needed: a usable alert shows out of combat with no target, ex: "
+        .. "Sprint, a combo point alert without an enemy target. The target, enemy and friendly conditions "
+        .. "can still ask for one",
     "/osa hide <n> <condition> off|true|false - hide alert n while the condition is true or false, "
         .. "ex: /osa hide 1 combat false. Conditions: " .. table.concat(CONDITIONS, ", "),
     "/osa size <size> - every icon's size, 0 = " .. SIZE,
@@ -1728,8 +1865,8 @@ SlashCmdList.OPCOWSSPELLALERTS = function(msg)
         local n, value = rest:match("^(%d+)%s+(%a+)$")
         local a = Alert(n)
         value = value and value:lower()
-        if not (a and a.kind == "usable" and (value == "on" or value == "off")) then
-            Print("/osa anytime <n> on|off, n is a usable alert's number in /osa list.")
+        if not (a and a.kind ~= "debuff" and (value == "on" or value == "off")) then
+            Print("/osa anytime <n> on|off, n is a usable or combo point alert's number in /osa list.")
             return
         end
         a.anytime = value == "on" or nil
@@ -1790,7 +1927,15 @@ SlashCmdList.OPCOWSSPELLALERTS = function(msg)
         OSA.Probe(rest)
     elseif cmd == "debug" then
         db.debug = not db.debug or nil
-        Print("debug " .. (db.debug and "on" or "off"))
+        if db.debug then
+            -- a fresh trace, starting with every alert's state
+            db.trace = {}
+            wipe(tracedState)
+            Print("debug on. Alert changes are logged to the saved variables, written on /reload.")
+        else
+            Print(("debug off, %d lines logged. /reload to write them to the file."):format(
+                type(db.trace) == "table" and #db.trace or 0))
+        end
     elseif cmd == "minimap" then
         db.minimap.hide = not db.minimap.hide or nil
         if OSA.UpdateMinimap then OSA.UpdateMinimap() end

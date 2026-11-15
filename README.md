@@ -11,7 +11,8 @@ Each alert can also:
 - Dim or hide while the spell waits on energy, rage or mana, or wait for a minimum amount.
 - Show early with a countdown before its cooldown ends or its debuff falls off.
 - Flash for a few seconds when it comes on.
-- Hide while a condition is true or false, ex: out of combat.
+- Skip needing a target. By default usable alerts wait for combat or an enemy target, and combo point alerts for an enemy target.
+- Hide while a condition is true or false, ex: out of combat, or while your target isn't friendly.
 - Play its own sound and have its own icon size.
 
 Unlock the icons to move them. Drag an icon to move its set, Shift-drag to pull it out on its own, and drop it touching other icons to snap to them.

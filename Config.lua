@@ -12,11 +12,14 @@ local KIND_TEXT = { usable = "It's usable", combo = "Combo points reach", debuff
 local COND_LABELS = {
     dead = "Dead", instance = "Instance", party = "Party", raid = "Raid",
     resting = "Resting", taxi = "Taxi", combat = "Combat", mounted = "Mounted",
+    target = "Target", enemy = "Enemy", friendly = "Friendly",
     fireTotem = "Fire totem", earthTotem = "Earth totem", waterTotem = "Water totem", airTotem = "Air totem",
 }
 local COND_DESC = {
     dead = "dead", instance = "in a dungeon", party = "in a party", raid = "in a raid",
     resting = "resting", taxi = "on a flight path", combat = "in combat", mounted = "mounted",
+    target = "you have a target", enemy = "your target is a living enemy you can attack",
+    friendly = "your target is friendly",
     fireTotem = "a Fire totem is down", earthTotem = "an Earth totem is down",
     waterTotem = "a Water totem is down", airTotem = "an Air totem is down",
 }
@@ -328,14 +331,16 @@ local function Summary(a)
     local early = (a.early and (", %d sec early"):format(a.early) or "")
         .. (a.flash and (", shown %d sec"):format(a.flash) or "")
     local at = (a.atPower and (", %d+ energy"):format(a.atPower) or "") .. early
-    if a.kind == "combo" then return ("at %d combo points"):format(a.cp or 0) .. at end
+    if a.kind == "combo" then
+        return ("at %d combo points"):format(a.cp or 0) .. (a.anytime and ", no target needed" or "") .. at
+    end
     local cp = a.cp and (", %d+ combo points"):format(a.cp) or ""
     if a.kind == "debuff" then
         local id = OSA.AlertSpell(a)
         local d = a.duration or (id and OSA.DebuffDuration(a, id, 5))
         return (d and ("debuff falls off (%s sec)"):format(d) or "debuff falls off (length unknown)") .. cp .. early
     end
-    return "usable" .. (a.anytime and " any time" or "") .. cp .. at
+    return "usable" .. (a.anytime and ", no target needed" or "") .. cp .. at
 end
 
 -- the debuff length the alert uses when its box is 0
@@ -350,7 +355,7 @@ end
 
 local function CreateConfig()
     local f = CreateFrame("Frame", "OpcowsSpellAlertsConfig", UIParent, "BasicFrameTemplateWithInset")
-    f:SetSize(WIDTH, 764)
+    f:SetSize(WIDTH, 786)
     f:SetPoint("CENTER")
     f:SetFrameStrata("HIGH")
     f:SetToplevel(true)
@@ -395,7 +400,7 @@ local function CreateConfig()
 
     -- the selected alert -------------------------------------------------------------------------
     local edit = Box(f)
-    edit:SetSize(WIDTH - 28, 354)
+    edit:SetSize(WIDTH - 28, 376)
     edit:SetPoint("TOPLEFT", list, "BOTTOMLEFT", 0, -8)
 
     local none = Label(edit, "Select an alert in the list to change it.", "GameFontDisableSmall")
@@ -465,16 +470,25 @@ local function CreateConfig()
     Tooltip(lasts, "Debuff length", "How many seconds the debuff lasts, used when the game hides auras in "
         .. "combat. 0 reads it from the spell's tooltip, or from the debuff itself when it can.")
 
-    -- usable alerts only: by default they wait for a fight, or a spell that's always usable would always show
-    local anytime = Check(edit, "Any time", function(v)
+    -- usable and combo point alerts: by default they wait for a fight or an enemy target, or a
+    -- spell that's always usable would always show
+    local anytime = Check(edit, "No target needed", function(v)
         local a = Selected()
         if a then a.anytime = v or nil end
         OSA.Changed()
     end)
     anytime:SetPoint("LEFT", when, "RIGHT", 8, 0)
-    Tooltip(anytime, "Any time", "Show the icon whenever the spell is ready, ex: Sprint coming off "
-        .. "cooldown while you travel.\n\nUnchecked, it only shows in combat or while you target "
-        .. "something you can attack, so spells that are almost always usable don't sit on screen.")
+    Tooltip(anytime, "No target needed", function()
+        local a = Selected()
+        local unchecked = a and a.kind == "combo"
+            and "Unchecked, it only shows while you target a living enemy."
+            or "Unchecked, it only shows in combat or while you target a living enemy, so spells that "
+                .. "are almost always usable don't sit on screen."
+        return "Show the icon whenever the spell is ready, with or without a target, ex: Sprint coming "
+            .. "off cooldown while you travel.\n\n" .. unchecked .. "\n\nTo ask for a certain target, "
+            .. "use the Target, Enemy and Friendly conditions below, ex: Not Friendly for a heal "
+            .. "on your target."
+    end)
 
     -- the conditions, as in Buff Reminder: each check cycles off, hide while true, hide while false
     local condTitle = Label(edit, "Hide the icon while:", "GameFontHighlightSmall")
@@ -511,7 +525,7 @@ local function CreateConfig()
     end
 
     local soundLabel = Label(edit, "Sound:", "GameFontHighlightSmall")
-    soundLabel:SetPoint("TOPLEFT", condTitle, "BOTTOMLEFT", 0, -82)
+    soundLabel:SetPoint("TOPLEFT", condTitle, "BOTTOMLEFT", 0, -104)
     local soundNames = { "off" }
     for _, s in ipairs(OSA.SOUNDS) do table.insert(soundNames, s.name) end
     local sound = Cycle(edit, 100, function(dir)
@@ -713,7 +727,7 @@ local function CreateConfig()
         lastsLabel:SetShown(a ~= nil and a.kind == "debuff")
         lasts:SetShown(a ~= nil and a.kind == "debuff")
         lastsHint:SetShown(a ~= nil and a.kind == "debuff")
-        anytime:SetShown(a ~= nil and a.kind == "usable")
+        anytime:SetShown(a ~= nil and a.kind ~= "debuff")
         for _, w in ipairs(powerWidgets) do w:SetShown(a ~= nil and a.kind ~= "debuff") end
         if a then
             local id = OSA.AlertSpell(a)
