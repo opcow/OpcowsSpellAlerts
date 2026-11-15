@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.15.0
+
+### Added
+
+- "Whole seconds" option: an icon shown early counts down in whole seconds all the way, without tenths under 3 seconds.
+
+### Fixed
+
+- Usable and debuff alerts could show a combo point number (often 0) on their icon after "Alert when" was cycled past Combo points reach. Only combo point alerts, and alerts that want at least 1 combo point, show it now.
+
 ## 0.14.0
 
 ### Added

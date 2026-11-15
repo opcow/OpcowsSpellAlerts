@@ -1497,11 +1497,15 @@ function OSA.Update()
             else
                 f.queued:SetAlpha(1)
             end
-            local cp = (a.kind == "combo" or a.cp) and Num(ComboPoints())
+            -- the combo points, on combo alerts and alerts that want some (a 0 left from a combo
+            -- alert doesn't count)
+            local cp = (a.kind == "combo" or (a.cp or 0) > 0) and Num(ComboPoints())
             f.count:SetText(cp and tostring(cp) or "")
             local left = not preview and early[a] and early[a] - GetTime()
             f.shade:SetShown(left and true or false)
-            f.timer:SetText(left and (left < 3 and ("%.1f"):format(left) or ("%d"):format(math.ceil(left))) or "")
+            -- tenths under 3 seconds, unless the Whole seconds option is on
+            f.timer:SetText(left and (left < 3 and not db.wholeSeconds and ("%.1f"):format(left)
+                or ("%d"):format(math.ceil(left))) or "")
             local alpha = db.unlocked and 0.6 or dim and DIM or 1
             -- the fade is set every frame, see OnUpdate
             f.flash = flash and { at = flash, len = a.flash, alpha = alpha } or nil
@@ -1719,7 +1723,7 @@ end
 local function Describe(i, a)
     local text = ("%d. %s, %s"):format(i, a.spell, a.kind)
     if a.kind == "combo" then text = text .. " at " .. (a.cp or 0) .. " points" end
-    if a.kind ~= "combo" and a.cp then text = text .. ", with " .. a.cp .. "+ combo points" end
+    if a.kind ~= "combo" and (a.cp or 0) > 0 then text = text .. ", with " .. a.cp .. "+ combo points" end
     if a.kind == "debuff" then
         local id = AlertSpell(a)
         local d = a.duration or (id and DebuffDuration(a, id, 5))

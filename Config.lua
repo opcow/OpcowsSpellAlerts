@@ -334,7 +334,7 @@ local function Summary(a)
     if a.kind == "combo" then
         return ("at %d combo points"):format(a.cp or 0) .. (a.anytime and ", no target needed" or "") .. at
     end
-    local cp = a.cp and (", %d+ combo points"):format(a.cp) or ""
+    local cp = (a.cp or 0) > 0 and (", %d+ combo points"):format(a.cp) or ""
     if a.kind == "debuff" then
         local id = OSA.AlertSpell(a)
         local d = a.duration or (id and OSA.DebuffDuration(a, id, 5))
@@ -427,7 +427,11 @@ local function CreateConfig()
         local a = Selected()
         if not a then return end
         a.kind = Step(KINDS, a.kind, dir)
-        if a.kind == "combo" then a.cp = a.cp or 0 end
+        if a.kind == "combo" then
+            a.cp = a.cp or 0
+        elseif a.cp and a.cp <= 0 then
+            a.cp = nil
+        end
         OSA.Changed()
     end)
     when:SetPoint("LEFT", whenLabel, "RIGHT", 8, 0)
@@ -683,10 +687,16 @@ local function CreateConfig()
         OSA.UpdateMinimap()
     end)
     minimap:SetPoint("TOPLEFT", unlock, "BOTTOMLEFT", 0, -8)
+    local whole = Check(f, "Whole seconds", function(v)
+        OSA.DB().wholeSeconds = v or nil
+    end)
+    whole:SetPoint("LEFT", minimap, "LEFT", 130, 0)
+    Tooltip(whole, "Whole seconds", "The countdown on an icon shown early counts in whole seconds all the "
+        .. "way down. Off, it shows tenths of a second under 3 seconds, ex: 2.4.")
     local debug = Check(f, "Debug messages", function(v)
         OSA.DB().debug = v or nil
     end)
-    debug:SetPoint("LEFT", minimap, "LEFT", 200, 0)
+    debug:SetPoint("LEFT", minimap, "LEFT", 265, 0)
 
     local probeHint = Label(f, "Alert not firing? Type /osa probe <spell> in and out of combat.", "GameFontDisableSmall")
     probeHint:SetPoint("BOTTOMLEFT", 16, 12)
@@ -760,6 +770,7 @@ local function CreateConfig()
         ShowNumber(size)
         minimap:SetChecked(not db.minimap.hide)
         debug:SetChecked(db.debug and true or false)
+        whole:SetChecked(db.wholeSeconds and true or false)
     end
 
     f:SetScript("OnShow", function(self) self:Refresh() end)
