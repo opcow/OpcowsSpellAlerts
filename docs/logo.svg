@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="45%" r="70%">
+      <stop offset="0" stop-color="#2a2350"/>
+      <stop offset="0.6" stop-color="#171331"/>
+      <stop offset="1" stop-color="#0b0918"/>
+    </radialGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff3b0"/>
+      <stop offset="0.35" stop-color="#e2b048"/>
+      <stop offset="0.7" stop-color="#a8761c"/>
+      <stop offset="1" stop-color="#f0cf6a"/>
+    </linearGradient>
+    <radialGradient id="spell" cx="38%" cy="30%" r="85%">
+      <stop offset="0" stop-color="#8fd0ff"/>
+      <stop offset="0.45" stop-color="#3c63d8"/>
+      <stop offset="1" stop-color="#1a1660"/>
+    </radialGradient>
+    <linearGradient id="bolt" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.5" stop-color="#d8f1ff"/>
+      <stop offset="1" stop-color="#8fd3ff"/>
+    </linearGradient>
+    <radialGradient id="badge" cx="40%" cy="35%" r="70%">
+      <stop offset="0" stop-color="#ff6b5a"/>
+      <stop offset="1" stop-color="#b3120c"/>
+    </radialGradient>
+    <filter id="blur" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="14"/></filter>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="6"/></filter>
+    <clipPath id="icon"><rect x="136" y="136" width="240" height="240" rx="30"/></clipPath>
+  </defs>
+
+  <!-- background tile -->
+  <rect x="8" y="8" width="496" height="496" rx="64" fill="url(#bg)"/>
+  <rect x="8" y="8" width="496" height="496" rx="64" fill="none" stroke="url(#gold)" stroke-width="10"/>
+
+  <!-- sound waves -->
+  <g fill="none" stroke="#f5c542" stroke-linecap="round">
+    <path d="M104,196 C80,226 80,286 104,316" stroke-width="14" opacity="0.95"/>
+    <path d="M66,166 C30,214 30,298 66,346" stroke-width="12" opacity="0.6"/>
+    <path d="M408,196 C432,226 432,286 408,316" stroke-width="14" opacity="0.95"/>
+    <path d="M446,166 C482,214 482,298 446,346" stroke-width="12" opacity="0.6"/>
+  </g>
+
+  <!-- the spell alert glow -->
+  <rect x="124" y="124" width="264" height="264" rx="40" fill="none" stroke="#ffd23f" stroke-width="30" filter="url(#blur)"/>
+  <rect x="124" y="124" width="264" height="264" rx="40" fill="none" stroke="#ffe680" stroke-width="6" stroke-dasharray="26 14" opacity="0.9"/>
+
+  <!-- the icon -->
+  <rect x="136" y="136" width="240" height="240" rx="30" fill="url(#spell)"/>
+  <g clip-path="url(#icon)">
+    <circle cx="256" cy="250" r="110" fill="#b6e4ff" opacity="0.35" filter="url(#blur)"/>
+    <g opacity="0.25" fill="#d9f2ff">
+      <path d="M256,256 L196,136 L316,136 Z"/>
+      <path d="M256,256 L376,200 L376,312 Z"/>
+      <path d="M256,256 L316,376 L196,376 Z"/>
+      <path d="M256,256 L136,312 L136,200 Z"/>
+    </g>
+    <!-- lightning bolt -->
+    <path d="M282,150 L196,272 L246,272 L222,362 L318,232 L264,232 Z"
+          fill="url(#bolt)" stroke="#10123a" stroke-width="9" stroke-linejoin="round"/>
+  </g>
+  <!-- the thin dark action bar frame -->
+  <rect x="136" y="136" width="240" height="240" rx="30" fill="none" stroke="#0b0918" stroke-width="12"/>
+  <rect x="144" y="144" width="224" height="224" rx="24" fill="none" stroke="#ffffff" stroke-width="2" opacity="0.25"/>
+
+  <!-- sparkles -->
+  <g fill="#fff8d6">
+    <path d="M118,82 l6,20 l20,6 l-20,6 l-6,20 l-6,-20 l-20,-6 l20,-6 z"/>
+    <path d="M400,70 l4,13 l13,4 l-13,4 l-4,13 l-4,-13 l-13,-4 l13,-4 z" opacity="0.8"/>
+    <path d="M86,418 l4,13 l13,4 l-13,4 l-4,13 l-4,-13 l-13,-4 l13,-4 z" opacity="0.7"/>
+  </g>
+
+  <!-- alert badge -->
+  <circle cx="392" cy="392" r="62" fill="#ff5a3c" opacity="0.5" filter="url(#soft)"/>
+  <circle cx="392" cy="392" r="50" fill="url(#badge)" stroke="#fff6e0" stroke-width="7"/>
+  <circle cx="392" cy="392" r="54" fill="none" stroke="#0b0918" stroke-width="2" opacity="0.6"/>
+  <path d="M392,360 L392,400" stroke="#fff6e0" stroke-width="13" stroke-linecap="round"/>
+  <circle cx="392" cy="422" r="7.5" fill="#fff6e0"/>
+</svg>
