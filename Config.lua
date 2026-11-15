@@ -6,9 +6,10 @@ local ROW_HEIGHT = 20
 local WIDTH = 420
 local ICON = "Interface\\Icons\\Ability_Warrior_Challange"
 -- the kinds in the order the "Alert when" button cycles through them
-local KINDS = { "usable", "combo", "debuff" }
+local KINDS = { "usable", "combo", "debuff", "aura" }
 local POWER_TEXT = { show = "Show it", dim = "Dim it", hide = "Hide it" }
-local KIND_TEXT = { usable = "It's usable", combo = "Combo points reach", debuff = "My debuff falls off" }
+local KIND_TEXT = { usable = "It's usable", combo = "Combo points reach", debuff = "My debuff falls off",
+    aura = "A debuff is on the target" }
 local COND_LABELS = {
     dead = "Dead", instance = "Instance", party = "Party", raid = "Raid",
     resting = "Resting", taxi = "Taxi", combat = "Combat", mounted = "Mounted",
@@ -335,6 +336,14 @@ local function Summary(a)
         return ("at %d combo points"):format(a.cp or 0) .. (a.anytime and ", no target needed" or "") .. at
     end
     local cp = (a.cp or 0) > 0 and (", %d+ combo points"):format(a.cp) or ""
+    -- the debuffs a usable or combo alert waits for
+    if a.need and (a.kind == "usable" or a.kind == "combo") then
+        at = at .. ", with " .. table.concat(a.need, " or ")
+    end
+    if a.kind == "aura" then
+        return "on the target" .. (a.anyone and ", anyone's" or "") .. cp
+            .. (a.flash and (", shown %d sec"):format(a.flash) or "")
+    end
     if a.kind == "debuff" then
         local id = OSA.AlertSpell(a)
         local d = a.duration or (id and OSA.DebuffDuration(a, id, 5))
@@ -355,7 +364,7 @@ end
 
 local function CreateConfig()
     local f = CreateFrame("Frame", "OpcowsSpellAlertsConfig", UIParent, "BasicFrameTemplateWithInset")
-    f:SetSize(WIDTH, 786)
+    f:SetSize(WIDTH, 812)
     f:SetPoint("CENTER")
     f:SetFrameStrata("HIGH")
     f:SetToplevel(true)
@@ -376,7 +385,7 @@ local function CreateConfig()
     title:SetText("Opcow's Spell Alerts")
 
     local help = Label(f, "A spell's icon pops up with a sound when it's usable, when a finisher has enough "
-        .. "combo points, or when your debuff falls off the target.", "GameFontHighlightSmall")
+        .. "combo points, when your debuff falls off the target, or while a debuff is on it.", "GameFontHighlightSmall")
     help:SetPoint("TOPLEFT", 16, -32)
     help:SetPoint("RIGHT", f, "RIGHT", -16, 0)
     help:SetWordWrap(true)
@@ -392,15 +401,49 @@ local function CreateConfig()
         end)
     end)
     addSpell:SetPoint("TOPLEFT", 14, -66)
-    local dropHint = Label(f, "or drag a spell onto the list", "GameFontDisableSmall")
-    dropHint:SetPoint("LEFT", addSpell, "RIGHT", 8, 0)
+    -- a debuff that isn't a spell of yours, ex: Frostbite, which procs from Frost spells
+    StaticPopupDialogs.OPCOWS_SPELL_ALERTS_DEBUFF = {
+        text = "The debuff's name or spell id, ex: Frostbite.\nIts icon shows while it's on your target.",
+        button1 = ACCEPT or "Accept",
+        button2 = CANCEL or "Cancel",
+        hasEditBox = true,
+        maxLetters = 60,
+        OnAccept = function(self)
+            local box = self.editBox or self.EditBox or (self.GetEditBox and self:GetEditBox())
+            local a, err = OSA.AddAura(box and box:GetText() or "")
+            if a then
+                selected = #OSA.DB().alerts
+            else
+                OSA.Print(err)
+            end
+            OSA.Changed()
+        end,
+        EditBoxOnEnterPressed = function(self)
+            local popup = self:GetParent()
+            local accept = popup.button1 or (popup.GetButton1 and popup:GetButton1())
+            if accept then accept:Click() end
+        end,
+        EditBoxOnEscapePressed = function(self) self:GetParent():Hide() end,
+        timeout = 0,
+        whileDead = true,
+        hideOnEscape = true,
+    }
+    local addDebuff = Button(f, "Debuff by name...", 130, function()
+        StaticPopup_Show("OPCOWS_SPELL_ALERTS_DEBUFF")
+    end)
+    addDebuff:SetPoint("LEFT", addSpell, "RIGHT", 4, 0)
+    Tooltip(addDebuff, "Debuff by name", "Alert while a debuff is on your target, even one that isn't in "
+        .. "your spellbook, ex: Frostbite, which procs at random from Frost spells. Type its name or "
+        .. "spell id.\n\nThe first time, its spell ids are looked up out of combat, which takes a few seconds.")
+    local dropHint = Label(f, "or drag a spell in", "GameFontDisableSmall")
+    dropHint:SetPoint("LEFT", addDebuff, "RIGHT", 8, 0)
 
     local list = ScrollList(f, WIDTH - 28, 170, Drop)
     list:SetPoint("TOPLEFT", 14, -92)
 
     -- the selected alert -------------------------------------------------------------------------
     local edit = Box(f)
-    edit:SetSize(WIDTH - 28, 376)
+    edit:SetSize(WIDTH - 28, 402)
     edit:SetPoint("TOPLEFT", list, "BOTTOMLEFT", 0, -8)
 
     local none = Label(edit, "Select an alert in the list to change it.", "GameFontDisableSmall")
@@ -441,7 +484,10 @@ local function CreateConfig()
         .. "combo points, ex: Eviscerate at 5.\n"
         .. "|cffffd100My debuff falls off:|r your debuff on the target you're fighting has run out, "
         .. "ex: Rupture. It's timed from your cast when the game hides auras in combat, so it may "
-        .. "not notice a debuff removed early.")
+        .. "not notice a debuff removed early.\n"
+        .. "|cffffd100A debuff is on the target:|r the icon shows while the debuff is on your target, "
+        .. "ex: Frostbite, which procs at random. In combat the game's own debuff button shows it. "
+        .. "Add debuffs that aren't your spells with \"Debuff by name...\".")
 
     local cpLabel = Label(edit, "Combo points at least:", "GameFontHighlightSmall")
     cpLabel:SetPoint("TOPLEFT", whenLabel, "BOTTOMLEFT", 0, -22)
@@ -494,9 +540,54 @@ local function CreateConfig()
             .. "on your target."
     end)
 
+    -- aura alerts, in the same spot: yours only, or anyone's
+    local anyone = Check(edit, "Anyone's", function(v)
+        local a = Selected()
+        if a then a.anyone = v or nil end
+        OSA.Changed()
+    end)
+    anyone:SetPoint("LEFT", when, "RIGHT", 8, 0)
+    Tooltip(anyone, "Anyone's", "Count the debuff whoever put it on the target, ex: another mage's "
+        .. "Frostbite or a warrior's Sunder Armor.\n\nUnchecked, only yours.")
+
+    -- usable and combo alerts: only while one of these debuffs is on the target, ex: Ice Lance
+    -- while Frostbite or Frost Nova is on it
+    local needLabel = Label(edit, "Only while on target:", "GameFontHighlightSmall")
+    needLabel:SetPoint("TOPLEFT", cpLabel, "BOTTOMLEFT", 0, -22)
+    local need = EditBox(edit, 160)
+    need:SetPoint("LEFT", needLabel, "RIGHT", 10, 0)
+    need:SetMaxLetters(200)
+    local function SaveNeed(self)
+        local a = Selected()
+        if a then OSA.SetNeed(a, self:GetText()) end
+        OSA.Changed()
+    end
+    need:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+    need:SetScript("OnEditFocusLost", SaveNeed)
+    need:SetScript("OnEscapePressed", function(self)
+        self:SetScript("OnEditFocusLost", nil)
+        self:ClearFocus()
+        self:SetScript("OnEditFocusLost", SaveNeed)
+        OSA.Changed()
+    end)
+    Tooltip(need, "Only while on the target", "Debuff names, split by commas. The icon only shows while one "
+        .. "of them is on your target, ex: Frostbite, Frost Nova on Ice Lance, so one icon says when to "
+        .. "cast it. Spell ids work too. Empty = no debuff needed.\n\nIn combat the game hides auras from "
+        .. "addons, so the icon is put inside the game's own debuff button, which shows only while one "
+        .. "is on. Then there may be no sound.")
+    local needAnyone = Check(edit, "Anyone's", function(v)
+        local a = Selected()
+        if a then a.anyone = v or nil end
+        OSA.Changed()
+    end)
+    needAnyone:SetPoint("LEFT", need, "RIGHT", 6, 0)
+    needAnyone:SetHitRectInsets(0, -50, 0, 0)
+    Tooltip(needAnyone, "Anyone's", "Count the debuffs whoever put them on the target, ex: another "
+        .. "mage's Frost Nova.\n\nUnchecked, only yours.")
+
     -- the conditions, as in Buff Reminder: each check cycles off, hide while true, hide while false
     local condTitle = Label(edit, "Hide the icon while:", "GameFontHighlightSmall")
-    condTitle:SetPoint("TOPLEFT", cpLabel, "BOTTOMLEFT", 0, -16)
+    condTitle:SetPoint("TOPLEFT", needLabel, "BOTTOMLEFT", 0, -16)
     local condHint = Label(edit, "click to cycle: off, while true, |cffff4040while false|r", "GameFontDisableSmall")
     condHint:SetPoint("LEFT", condTitle, "RIGHT", 8, 0)
     local condChecks = {}
@@ -540,9 +631,10 @@ local function CreateConfig()
         OSA.Changed()
     end)
     sound:SetPoint("LEFT", soundLabel, "RIGHT", 8, 0)
-    Tooltip(sound, "Sound", "Played once each time the alert is ready: the spell is off cooldown, or the "
-        .. "debuff has fallen off. Not when the icon shows early. Click for the next sound, right-click "
-        .. "for the one before.")
+    Tooltip(sound, "Sound", "Played once each time the alert is ready: the spell is off cooldown, the "
+        .. "debuff has fallen off, or the debuff is on the target. Not when the icon shows early. Click "
+        .. "for the next sound, right-click for the one before.\n\nA debuff on the target may show in "
+        .. "combat with no sound, if the game hides it from addons.")
     local play = Button(edit, "Play", 60, function()
         local a = Selected()
         if a then OSA.PlayAlertSound(a, true) end
@@ -708,11 +800,17 @@ local function CreateConfig()
         local items = {}
         for i, a in ipairs(alerts) do
             local id = OSA.AlertSpell(a)
+            local aura = a.kind == "aura"
             local text = a.spell .. "  |cff999999" .. Summary(a) .. "|r"
-            if not id then text = text .. "  |cffff6060not in your spellbook|r" end
+            if (aura or a.need) and OSA.Searching(a) then
+                text = text .. "  |cffffd100looking up its spell ids|r"
+            elseif not id and not aura then
+                text = text .. "  |cffff6060not in your spellbook|r"
+            end
             if a.off then text = "|cff808080" .. a.spell .. "  " .. Summary(a) .. " (off)|r" end
+            local listIcon = aura and OSA.AuraIcon(a) or id and OSA.SpellIcon(id) or 134400
             table.insert(items, {
-                text = text, icon = id and OSA.SpellIcon(id) or 134400, spell = id, dim = a.off,
+                text = text, icon = listIcon, spell = id, dim = a.off,
                 selected = i == selected,
                 onClick = function()
                     selected = i
@@ -737,14 +835,33 @@ local function CreateConfig()
         lastsLabel:SetShown(a ~= nil and a.kind == "debuff")
         lasts:SetShown(a ~= nil and a.kind == "debuff")
         lastsHint:SetShown(a ~= nil and a.kind == "debuff")
-        anytime:SetShown(a ~= nil and a.kind ~= "debuff")
-        for _, w in ipairs(powerWidgets) do w:SetShown(a ~= nil and a.kind ~= "debuff") end
+        local castable = a ~= nil and a.kind ~= "debuff" and a.kind ~= "aura"
+        needLabel:SetShown(castable)
+        need:SetShown(castable)
+        needAnyone:SetShown(castable)
+        -- the conditions move up into the row when it's hidden
+        condTitle:ClearAllPoints()
+        condTitle:SetPoint("TOPLEFT", castable and needLabel or cpLabel, "BOTTOMLEFT", 0, -16)
+        if a then
+            if not need:HasFocus() then need:SetText(a.need and table.concat(a.need, ", ") or "") end
+            needAnyone:SetChecked(a.anyone and true or false)
+        end
+        anytime:SetShown(castable)
+        anyone:SetShown(a ~= nil and a.kind == "aura")
+        for _, w in ipairs(powerWidgets) do w:SetShown(castable) end
+        -- an aura alert has no cooldown or length to show early by
+        if a and a.kind == "aura" then
+            earlyLabel:Hide()
+            earlyBox:Hide()
+            earlyHint:Hide()
+        end
         if a then
             local id = OSA.AlertSpell(a)
-            icon:SetTexture(id and OSA.SpellIcon(id) or 134400)
+            icon:SetTexture(a.kind == "aura" and OSA.AuraIcon(a) or id and OSA.SpellIcon(id) or 134400)
             name:SetText(a.spell)
             on:SetChecked(not a.off)
             anytime:SetChecked(a.anytime and true or false)
+            anyone:SetChecked(a.anyone and true or false)
             when:SetText(KIND_TEXT[a.kind] or a.kind)
             sound:SetText(a.sound or "ping")
             power:SetText(POWER_TEXT[a.power or "dim"])
@@ -754,7 +871,7 @@ local function CreateConfig()
             ShowNumber(earlyBox)
             ShowNumber(flashBox)
             earlyLabel:ClearAllPoints()
-            earlyLabel:SetPoint("TOPLEFT", a.kind == "debuff" and soundLabel or atLabel, "BOTTOMLEFT", 0, -22)
+            earlyLabel:SetPoint("TOPLEFT", castable and atLabel or soundLabel, "BOTTOMLEFT", 0, -22)
             earlyHint:SetText(a.kind == "debuff" and "sec before it falls off, 0 = off"
                 or "sec before its cooldown ends, 0 = off")
             ShowNumber(lasts)

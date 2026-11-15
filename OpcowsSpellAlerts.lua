@@ -2,10 +2,12 @@
 --   usable: the spell can be cast now, ex: Riposte after a parry
 --   combo: the spell is usable and the target has at least N combo points, ex: Eviscerate at 5
 --   debuff: your debuff has fallen off the target you're fighting, ex: Rupture
+--   aura: a debuff is on the target, ex: Frostbite, which procs at random
 --
 -- Forever blocks the combat log and makes auras secret in combat, so each alert reads what it can.
 -- A debuff is read directly when that works, else through the Cooldown Manager when it tracks
--- the debuff, else timed from your cast. /osa probe prints which reads work.
+-- the debuff, else timed from your cast. A debuff that's on the target is shown in combat by
+-- Blizzard's own aura button. /osa probe prints which reads work.
 
 local OSA = {}
 _G.OpcowsSpellAlerts = OSA
@@ -91,7 +93,27 @@ local function DB()
         end
         -- its own icon size, nil = the default
         if type(a.size) ~= "number" or a.size < 10 or a.size > 200 then a.size = nil end
+        -- an aura alert's spell ids seen on the target, as a set
+        if type(a.ids) == "table" then
+            for id in pairs(a.ids) do
+                if type(id) ~= "number" then a.ids[id] = nil end
+            end
+        else
+            a.ids = nil
+        end
+        -- the debuff names a usable or combo alert waits for, a list of strings
+        if type(a.need) == "table" then
+            for i = #a.need, 1, -1 do
+                if type(a.need[i]) ~= "string" or a.need[i] == "" then table.remove(a.need, i) end
+            end
+            if #a.need == 0 then a.need = nil end
+        else
+            a.need = nil
+        end
     end
+    -- spell ids by name for aura alerts, looked up once per game build: { build, names = { [lower
+    -- case name] = { ids } } }
+    if type(db.auraIds) ~= "table" or type(db.auraIds.names) ~= "table" then db.auraIds = { names = {} } end
     -- [lower case spell name] = { [combo points at the cast] = seconds }, debuff lengths read from
     -- the aura when it could be read
     db.learned = db.learned or {}
@@ -640,6 +662,226 @@ local function CastRecord(a, create)
     return rec
 end
 
+-- debuffs on the target --------------------------------------------------------------------------
+-- An aura alert shows while a debuff is on the target, ex: Frostbite. The debuff needn't be a spell
+-- in your spellbook. Out of combat it's read directly. In combat the game hides the target's auras
+-- from addons, but Blizzard's own aura button can show them, as Buff Reminder's alerts do for your
+-- buffs: each aura alert gets a CustomAuraContainer on the target with one slot, which the game
+-- fills while one of the debuff's spell ids is on it. Our icon only keeps its place under it. When
+-- the game lets us read whether the button is showing, that's the alert's state and the sound
+-- plays. When it doesn't, the button keeps its place and shows by itself, with no sound.
+
+-- [alert] = { holder, container, button, ids, filter, size, err }, made out of combat, see UpdateLive
+local live = {}
+-- how far the spell ids are searched for an aura alert's name, and how many each frame
+local SCAN_MAX, SCAN_STEP = 600000, 3000
+-- the search under way: { at = next id, found = { [lower case name] = { ids } } }
+local scan
+
+local function AuraFilter(a)
+    return a.anyone and "HARMFUL" or "HARMFUL|PLAYER"
+end
+
+-- the debuff names an alert follows: an aura alert's own, or the ones a usable or combo alert
+-- waits for ("only while on the target", a.need), nil for none
+local function AuraNames(a)
+    if a.kind == "aura" then return { a.spell } end
+    if (a.kind == "usable" or a.kind == "combo") and type(a.need) == "table" and #a.need > 0 then return a.need end
+    return nil
+end
+
+local function GameBuild()
+    if not GetBuildInfo then return "?" end
+    local ok, version, build = pcall(GetBuildInfo)
+    return ok and (tostring(version) .. " " .. tostring(build)) or "?"
+end
+
+-- the spell ids with the name, from the search, or nil when it hasn't been searched in this build
+local function ScannedIds(name)
+    local cache = DB().auraIds
+    if cache.build ~= GameBuild() then
+        cache.build, cache.names = GameBuild(), {}
+    end
+    local ids = cache.names[name:lower()]
+    return type(ids) == "table" and ids or nil
+end
+
+-- search every spell id for the names of aura alerts not searched yet, a few thousand a frame and
+-- not in combat, true when one finished
+local function ScanStep()
+    if InCombat() then return false end
+    if not scan then
+        local found
+        for _, a in ipairs(DB().alerts) do
+            for _, name in ipairs(AuraNames(a) or {}) do
+                if not ScannedIds(name) then
+                    found = found or {}
+                    found[name:lower()] = {}
+                end
+            end
+        end
+        if not found then return false end
+        scan = { at = 1, found = found }
+        Debug("looking up the spell ids of debuff names")
+    end
+    local stop = math.min(scan.at + SCAN_STEP - 1, SCAN_MAX)
+    local get = C_Spell and C_Spell.GetSpellName
+    if get then
+        local found = scan.found
+        pcall(function()
+            for id = scan.at, stop do
+                local n = get(id)
+                if n and not issecretvalue(n) then
+                    local ids = found[n:lower()]
+                    if ids then table.insert(ids, id) end
+                end
+            end
+        end)
+    end
+    scan.at = stop + 1
+    if scan.at <= SCAN_MAX then return false end
+    for name, ids in pairs(scan.found) do
+        DB().auraIds.names[name] = ids
+        Debug(("%s: spell ids %s"):format(name, #ids > 0 and table.concat(ids, ", ") or "none found"))
+    end
+    scan = nil
+    return true
+end
+
+-- true while the alert's spell ids are still being looked up
+local function Searching(a)
+    for _, name in ipairs(AuraNames(a) or {}) do
+        if not ScannedIds(name) then return true end
+    end
+    return false
+end
+
+-- the spell ids an aura alert follows, as a set and as a key: the search's, the ones seen on the
+-- target, and the spellbook's
+local function AuraIds(a)
+    local set, list = {}, {}
+    local function add(id)
+        id = Num(id)
+        if id and id > 0 and not set[id] then
+            set[id] = true
+            table.insert(list, id)
+        end
+    end
+    for _, name in ipairs(AuraNames(a) or {}) do
+        for _, id in ipairs(ScannedIds(name) or {}) do add(id) end
+        local e = Book()[name:lower()]
+        add(e and e.id)
+        if C_Spell and C_Spell.GetSpellInfo then
+            local ok, info = pcall(C_Spell.GetSpellInfo, name)
+            add(ok and type(info) == "table" and info.spellID or nil)
+        end
+    end
+    if a.ids then
+        for id in pairs(a.ids) do add(id) end
+    end
+    table.sort(list)
+    return set, table.concat(list, ",")
+end
+
+-- the icon for an aura alert: its spell's, else the first spell id with an icon
+local function AuraIcon(a)
+    local e = Book()[a.spell:lower()]
+    local icon = e and SpellIcon(e.id)
+    if icon then return icon end
+    local _, key = AuraIds(a)
+    for id in key:gmatch("%d+") do
+        icon = SpellIcon(tonumber(id))
+        if icon then return icon end
+    end
+    return nil
+end
+
+-- a debuff name as the game writes it, ex: "Frost Nova" for a typed "frost nova": the spellbook's,
+-- else a found spell id's
+local function GameName(name)
+    local e = Book()[name:lower()]
+    if e then return e.name end
+    local ids = ScannedIds(name)
+    return ids and ids[1] and SpellName(ids[1]) or name
+end
+
+-- whether one of the alert's debuffs is on the target, read directly: true or false, nil when the
+-- game hides it. Remembers the spell ids seen.
+local function ReadAura(a)
+    if Bool(UnitExists("target")) ~= true then return false end
+    if not (C_UnitAuras and C_UnitAuras.GetAuraDataBySpellName) then return nil end
+    local unknown = false
+    for _, name in ipairs(AuraNames(a) or {}) do
+        local ok, d = pcall(C_UnitAuras.GetAuraDataBySpellName, "target", GameName(name), AuraFilter(a))
+        if not ok or issecretvalue(d) then
+            unknown = true
+        elseif type(d) == "table" then
+            local id = Num(d.spellId)
+            if id then
+                a.ids = a.ids or {}
+                a.ids[id] = true
+            end
+            return true
+        end
+    end
+    -- in combat the read comes back empty when the game hides it
+    if unknown or InCombat() then return nil end
+    return false
+end
+
+-- the alert's aura button, when it has one that works
+local function Live(a)
+    local l = live[a]
+    return l and l.container and not l.err and l or nil
+end
+
+-- whether Blizzard's button shows the debuff: true, false, or nil with the game's secret boolean
+local function LiveShown(l)
+    local b = l.button
+    -- made the first time the debuff shows, so until then it's unknown (the button shows by itself)
+    if not b then return nil end
+    local ok, v = pcall(b.IsShown, b)
+    if not ok then return nil end
+    if issecretvalue(v) then return nil, v end
+    return v and true or false
+end
+
+local function AuraState(a)
+    if not EnoughCP(a) then return false end
+    local up = ReadAura(a)
+    local l = Live(a)
+    if l then
+        local shown, secret = LiveShown(l)
+        if shown ~= nil then return shown end
+        if up ~= nil then return up end
+        return nil, secret
+    end
+    return up == true
+end
+
+-- [alert] = its aura button, for the usable and combo alerts whose debuffs only the game knows
+-- about this update: the icon is put inside Blizzard's button, which shows only while one is on
+local gating = {}
+
+-- whether a usable or combo alert's "only while on the target" debuffs allow it: true, false, or
+-- nil when only the game knows (gating[a] is then set)
+local function Gate(a)
+    if not AuraNames(a) then return true end
+    -- read directly when the game allows it
+    local up = ReadAura(a)
+    if up ~= nil then return up end
+    local l = Live(a)
+    -- no button to lean on, ex: the game wouldn't make one: the debuffs can't be seen, and an icon
+    -- that shows whenever the spell is castable is what the list is there to stop
+    if not l then return false end
+    -- made the first time a debuff fills the slot, so none of them has been on since
+    if not l.button then return false end
+    local shown = LiveShown(l)
+    if shown ~= nil then return shown end
+    gating[a] = l
+    return nil
+end
+
 -- whether the spell was clicked and is waiting to go off, ex: Raptor Strike or Heroic Strike on
 -- the next swing, which the action bar shows lit. true, false, or nil with the game's secret
 -- boolean as the second value.
@@ -740,14 +982,29 @@ local function DebuffState(a, id)
     return EnoughCP(a)
 end
 
-local function State(a)
-    early[a] = nil
-    if a.off or Suppressed(a) then return false end
+local function SpellState(a)
+    if a.kind == "aura" then return AuraState(a) end
     local id = AlertSpell(a)
     if not id then return false end
     if a.kind == "combo" then return ComboState(a, id) end
     if a.kind == "debuff" then return DebuffState(a, id) end
     return UsableState(a, id)
+end
+
+local function State(a)
+    early[a] = nil
+    gating[a] = nil
+    if a.off or Suppressed(a) then return false end
+    local on, secret, dim = SpellState(a)
+    if on == false or a.kind == "aura" then return on, secret, dim end
+    local gate = Gate(a)
+    if gate == false then
+        early[a] = nil
+        return false
+    end
+    -- only the game knows whether a debuff is on: the icon shows inside its button, with no sound
+    if gate == nil and on == true then on = nil end
+    return on, secret, dim
 end
 
 local function SoundId(name)
@@ -1383,6 +1640,168 @@ local function MakeHolder()
     ApplyLayout()
 end
 
+-- aura buttons, see "debuffs on the target" ------------------------------------------------------
+local LIVE_SLOT = "debuff"
+
+-- stack counts from 2 up, like Blizzard's, so a debuff without stacks shows no "1"
+local function CountFormatter()
+    if not (C_StringUtil and C_StringUtil.CreateNumericRuleFormatter) then return nil end
+    local ok, fm = pcall(function()
+        local fm = C_StringUtil.CreateNumericRuleFormatter()
+        fm:SetBreakpoints({ { threshold = 0, format = "" }, { threshold = 2, format = "%d" } })
+        -- Blizzard formats inside its aura update, make sure it can't fail there
+        for n = 0, 2 do
+            local text = fm:FormatNumber(n)
+            if type(text) ~= "string" or issecretvalue(text) or (n < 2 and text ~= "") then
+                error("formatted " .. n .. " as " .. tostring(text))
+            end
+        end
+        return fm
+    end)
+    return ok and fm or nil
+end
+
+-- called by Blizzard once, when it makes the slot's button: drawn like our icons, with the time left
+-- as a swipe and the stacks. Frames in the button can't get scripts.
+local function InitLiveButton(l, button)
+    l.button = button
+    local ok, err = pcall(function()
+        pcall(button.EnableMouse, button, false)
+        button:ClearAllPoints()
+        button:SetPoint("CENTER", button:GetParent(), "CENTER", 0, 0)
+        button:SetSize(l.size, l.size)
+        local tex = button:CreateTexture(nil, "ARTWORK")
+        tex:SetAllPoints()
+        tex:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+        button:SetIcon(tex)
+        if l.gate then
+            -- a gate draws the alert's spell, ex: Ice Lance, not the debuff the game fills it with.
+            -- It's drawn here, as the game won't let addons touch the button later in combat.
+            tex:SetAlpha(0)
+            local face = button:CreateTexture(nil, "ARTWORK", nil, 1)
+            face:SetAllPoints()
+            face:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+            face:SetTexture(l.icon or 134400)
+            if HasAtlas(ICON_FRAME) then
+                local edge = button:CreateTexture(nil, "OVERLAY", nil, 2)
+                edge:SetAtlas(ICON_FRAME)
+                edge:SetAllPoints(button)
+                if HasAtlas(ICON_MASK) and face.AddMaskTexture and button.CreateMaskTexture then
+                    local mask = button:CreateMaskTexture()
+                    mask:SetAtlas(ICON_MASK)
+                    mask:SetAllPoints(face)
+                    face:AddMaskTexture(mask)
+                end
+            end
+            return
+        end
+        local cd = CreateFrame("Cooldown", nil, button, "CooldownFrameTemplate")
+        cd:SetAllPoints()
+        cd:SetDrawEdge(false)
+        -- what's wanted is the debuff, so it darkens as it runs out
+        pcall(cd.SetReverse, cd, true)
+        pcall(cd.SetHideCountdownNumbers, cd, true)
+        button:SetDurationCooldown(cd)
+        local over = CreateFrame("Frame", nil, button)
+        over:SetAllPoints()
+        over:SetFrameLevel(cd:GetFrameLevel() + 2)
+        if HasAtlas(ICON_FRAME) then
+            local edge = over:CreateTexture(nil, "OVERLAY", nil, 2)
+            edge:SetAtlas(ICON_FRAME)
+            edge:SetAllPoints(button)
+            if HasAtlas(ICON_MASK) and tex.AddMaskTexture and button.CreateMaskTexture then
+                local mask = button:CreateMaskTexture()
+                mask:SetAtlas(ICON_MASK)
+                mask:SetAllPoints(tex)
+                tex:AddMaskTexture(mask)
+            end
+        end
+        local count = over:CreateFontString(nil, "OVERLAY", "NumberFontNormalLarge")
+        count:SetPoint("BOTTOMRIGHT", -3, 3)
+        local fm = CountFormatter()
+        button:SetApplicationCount(count, fm and { formatter = fm } or nil)
+    end)
+    if not ok then Debug("styling the debuff button failed: " .. tostring(err)) end
+end
+
+-- a holder with a container on the target, whose one slot the game fills while one of the ids is on
+-- it. The holder is ours, so it can be moved and faded in combat.
+local function MakeLive(a, ids, key)
+    local l = { filter = AuraFilter(a), size = a.size or Size(), gate = a.kind ~= "aura" or nil }
+    if l.gate then
+        local id = AlertSpell(a)
+        l.icon = id and SpellIcon(id) or nil
+    end
+    l.holder = CreateFrame("Frame", nil, UIParent)
+    l.holder:SetSize(l.size, l.size)
+    l.holder:SetPoint("CENTER")
+    l.holder:SetFrameLevel(holder:GetFrameLevel() + 20)
+    l.holder:SetAlpha(0)
+    local ok, err = pcall(function()
+        local c = CreateFrame("AuraContainer", nil, l.holder, "CustomAuraContainerTemplate")
+        c:SetPoint("CENTER")
+        c:SetSize(l.size, l.size)
+        c:SetUnit("target")
+        pcall(c.EnableMouse, c, false)
+        l.container = c
+        c:AddAuraSlot(LIVE_SLOT, l.filter, {
+            candidateFilters = { includeSpellIDs = ids },
+            initializeFrame = function(button) InitLiveButton(l, button) end,
+        })
+        -- as Click Cast's containers do
+        pcall(c.SetEnabled, c, true)
+    end)
+    if ok then
+        l.ids = key
+    else
+        l.err = tostring(err)
+        Debug(("%s: Blizzard's aura button can't be made, %s"):format(a.spell, l.err))
+    end
+    return l
+end
+
+-- make, refilter and resize the aura alerts' buttons, out of combat only: the game refuses changes
+-- to them in combat and while auras are hidden
+local function UpdateLive()
+    if InCombatLockdown() or (C_Secrets and C_Secrets.ShouldAurasBeSecret and C_Secrets.ShouldAurasBeSecret()) then
+        return
+    end
+    local keep = {}
+    for _, a in ipairs(DB().alerts) do
+        if AuraNames(a) then
+            keep[a] = true
+            local l = live[a]
+            if l and (l.filter ~= AuraFilter(a) or (l.gate and true or false) ~= (a.kind ~= "aura")) then
+                -- mine or anyone's is the slot's own filter, so it takes a new container
+                l.holder:Hide()
+                l, live[a] = nil, nil
+            end
+            local ids, key = AuraIds(a)
+            if not l and key ~= "" then
+                live[a] = MakeLive(a, ids, key)
+            elseif l and l.container and not l.err then
+                if key ~= "" and key ~= l.ids and pcall(l.container.SetAuraSlotCandidateFilters, l.container,
+                    LIVE_SLOT, { includeSpellIDs = ids }) then
+                    l.ids = key
+                end
+                local size = a.size or Size()
+                if size ~= l.size then
+                    l.size = size
+                    pcall(l.holder.SetSize, l.holder, size, size)
+                    pcall(l.container.SetSize, l.container, size, size)
+                    if l.button then pcall(l.button.SetSize, l.button, size, size) end
+                end
+            end
+        end
+    end
+    for a, l in pairs(live) do
+        if not keep[a] then
+            if l.holder then l.holder:Hide() end
+            live[a] = nil
+        end
+    end
+end
+
 -- [alert] = its last state as text, for the debug trace
 local tracedState = {}
 -- the most lines the trace keeps, the oldest go first
@@ -1435,6 +1854,7 @@ function OSA.Update()
     local preview = db.unlocked or GetTime() < testUntil
     local now = GetTime()
     UpdateStatus()
+    UpdateLive()
     -- [key] = what its icon shows, for the alerts whose icon is up
     local showing = {}
     for _, a in ipairs(db.alerts) do
@@ -1459,14 +1879,18 @@ function OSA.Update()
         -- clicked and waiting for the next swing: it shows, lit, even if it'd be hidden, so the
         -- click is seen to have taken. No sound, it's not a new alert.
         local queued, queuedSecret
-        local id = not preview and not a.off and AlertSpell(a)
+        local id = not preview and not a.off and a.kind ~= "aura" and AlertSpell(a)
         if id then queued, queuedSecret = Queued(id) end
         if queued and on ~= true and not Suppressed(a) then
             on, secret, dim, flash = true, nil, nil, nil
         end
         if on ~= false then
             showing[AlertKey(a)] = { a = a, on = on, secret = secret, dim = dim, flash = flash,
-                queued = queued, queuedSecret = queuedSecret }
+                queued = queued, queuedSecret = queuedSecret,
+                -- Blizzard's button is the icon, ours only keeps its place under it
+                live = not preview and a.kind == "aura" and Live(a) or nil,
+                -- our icon goes inside Blizzard's button, which shows only while a debuff is on
+                gate = not preview and gating[a] or nil }
         end
     end
     if dragging and not (db.unlocked and IsMouseButtonDown and IsMouseButtonDown("LeftButton")) then
@@ -1476,6 +1900,8 @@ function OSA.Update()
     -- sizes may have changed, but a set being dragged is left where the mouse has it
     if not dragging or SyncBars() then ApplyLayout() end
     local shown = 0
+    -- [alert] = true for the aura buttons placed this time, the rest are faded out
+    local liveShown = {}
     for bi, bar in ipairs(db.bars) do
         for _, p in ipairs(PlaceIcons(bar, showing)) do
             local s = showing[p.key]
@@ -1489,7 +1915,7 @@ function OSA.Update()
             f:ClearAllPoints()
             f:SetPoint("CENTER", anchors[bi], "CENTER", p.x, p.y)
             f:EnableMouse(db.unlocked and true or false)
-            f.tex:SetTexture(id and SpellIcon(id) or 134400)
+            f.tex:SetTexture(a.kind == "aura" and AuraIcon(a) or id and SpellIcon(id) or 134400)
             f.queued:SetShown(s.queued and true or false)
             if s.queuedSecret ~= nil and f.queued.SetAlphaFromBoolean
                 and pcall(f.queued.SetAlphaFromBoolean, f.queued, s.queuedSecret, 1, 0) then
@@ -1511,9 +1937,30 @@ function OSA.Update()
             f.flash = flash and { at = flash, len = a.flash, alpha = alpha } or nil
             f:SetAlpha(flash and alpha * FlashAlpha(a.flash, now - flash) or alpha)
             f.tex:SetDesaturated(dim and true or false)
-            if on == nil then
+            if on == nil and secret ~= nil then
                 -- only the game knows: let it set the alpha, and play no sound
                 if not (f.SetAlphaFromBoolean and pcall(f.SetAlphaFromBoolean, f, secret, 1, 0)) then f:SetAlpha(1) end
+            end
+            f.live = nil
+            -- unlocked, our icon shows so it can be dragged
+            local l = not db.unlocked and (s.live or s.gate)
+            if l then
+                -- Blizzard's button shows the debuff, or for a gate the alert's spell while a
+                -- debuff is on, over our icon, which only keeps its place. A fade is on the
+                -- button's holder.
+                f:SetAlpha(0)
+                f.live = l.holder
+                l.holder:ClearAllPoints()
+                l.holder:SetPoint("CENTER", f, "CENTER")
+                local full = l.gate and (dim and DIM or 1) or 1
+                l.holder:SetAlpha(flash and full * FlashAlpha(a.flash, now - flash) or full)
+                if f.flash then f.flash.alpha = full end
+                -- a gate also needs the spell castable, which only the game may know
+                if l.gate and on == nil and secret ~= nil and not (l.holder.SetAlphaFromBoolean
+                    and pcall(l.holder.SetAlphaFromBoolean, l.holder, secret, full, 0)) then
+                    l.holder:SetAlpha(full)
+                end
+                liveShown[a] = true
             end
             f:Show()
         end
@@ -1521,7 +1968,12 @@ function OSA.Update()
     for i = shown + 1, #icons do
         icons[i]:Hide()
         icons[i].flash = nil
+        icons[i].live = nil
         icons[i].key, icons[i].bar = nil, nil
+        if icons[i]:GetParent() ~= holder then pcall(icons[i].SetParent, icons[i], holder) end
+    end
+    for a, l in pairs(live) do
+        if not liveShown[a] and l.holder then l.holder:SetAlpha(0) end
     end
 end
 
@@ -1605,6 +2057,15 @@ frame:SetScript("OnEvent", function(_, event, ...)
     elseif event == "PLAYER_TARGET_CHANGED" then
         -- casts on a target whose guid couldn't be read belong to the old target
         for _, byTarget in pairs(casts) do byTarget["?"] = nil end
+        -- the aura buttons follow the new target (they may already)
+        if not InCombatLockdown() then
+            for a, l in pairs(live) do
+                if l.container and not l.err then
+                    local ok, err = pcall(l.container.SetUnit, l.container, "target")
+                    if not ok then Debug(("%s: aura button target: %s"):format(a.spell, tostring(err))) end
+                end
+            end
+        end
     elseif event == "PLAYER_REGEN_ENABLED" then
         wipe(casts)
         wipe(glowing)
@@ -1617,11 +2078,13 @@ frame:SetScript("OnUpdate", function(_, dt)
     local now = GetTime()
     for _, f in ipairs(icons) do
         local fl = f.flash
-        if fl then f:SetAlpha(fl.alpha * FlashAlpha(fl.len, now - fl.at)) end
+        if fl then (f.live or f):SetAlpha(fl.alpha * FlashAlpha(fl.len, now - fl.at)) end
     end
     elapsed = elapsed + dt
     if elapsed < TICK or not holder then return end
     elapsed = 0
+    -- an aura alert's name being looked up
+    if ScanStep() then OSA.Changed() end
     if #DB().alerts > 0 or DB().unlocked then OSA.Update() end
 end)
 
@@ -1698,6 +2161,27 @@ local function ProbeSpell(name)
     if frames == 0 then Print("  cooldown manager: no frame for it" .. (CDMOn() and "" or " (manager off or missing)")) end
 end
 
+local function ProbeAura(a)
+    local _, key = AuraIds(a)
+    Print(("%s (%s on the target, %s): spell ids %s%s"):format(a.spell,
+        table.concat(AuraNames(a), " or "), a.anyone and "anyone's" or "yours",
+        key ~= "" and key or "none yet", Searching(a) and ", still looking them up" or ""))
+    local l = live[a]
+    local button = "none"
+    if l and l.button then
+        local ok, v = pcall(l.button.IsShown, l.button)
+        button = not ok and ("made, the game won't say if it's shown (" .. tostring(v) .. ")") or issecretvalue(v) and "made, shown is secret (no sound in combat)"
+            or ("made, shown " .. tostring(v))
+    end
+    Print(("  aura button: %s; button %s"):format(
+        not l and "not made" or l.err and ("failed: " .. tostring(l.err)) or "made", button))
+    local up = ReadAura(a)
+    local on
+    if a.kind == "aura" then on = AuraState(a) else on = Gate(a) end
+    Print(("  read directly: %s; we say %s"):format(up == nil and "unknown" or tostring(up),
+        on == nil and "unknown, the button shows by itself" or tostring(on)))
+end
+
 function OSA.Probe(name)
     local cpOk, cp = pcall(GetComboPoints or function() return "missing" end, "player", "target")
     local powerType = Enum and Enum.PowerType and Enum.PowerType.ComboPoints
@@ -1710,10 +2194,23 @@ function OSA.Probe(name)
         local s = seen[ev]
         Print(("  %s: %s"):format(ev, s and (s.count .. " seen, last: " .. s.last) or "not seen"))
     end
+    local function aura(n)
+        for _, a in ipairs(DB().alerts) do
+            if a.kind == "aura" and a.spell:lower() == n:lower() then return a end
+        end
+    end
+    local function needs(n)
+        for _, a in ipairs(DB().alerts) do
+            if a.kind ~= "aura" and AuraNames(a) and a.spell:lower() == n:lower() then ProbeAura(a) end
+        end
+    end
     if name and name ~= "" then
-        ProbeSpell(name)
+        if aura(name) then ProbeAura(aura(name)) else ProbeSpell(name) needs(name) end
     else
-        for _, a in ipairs(DB().alerts) do ProbeSpell(a.spell) end
+        for _, a in ipairs(DB().alerts) do
+            if a.kind == "aura" then ProbeAura(a) else ProbeSpell(a.spell) end
+            if a.kind ~= "aura" and AuraNames(a) then ProbeAura(a) end
+        end
         if #DB().alerts == 0 then Print("  /osa probe <spell> to probe a spell.") end
     end
 end
@@ -1721,7 +2218,11 @@ end
 -- slash commands ---------------------------------------------------------------------------------
 
 local function Describe(i, a)
-    local text = ("%d. %s, %s"):format(i, a.spell, a.kind)
+    local text = ("%d. %s, %s"):format(i, a.spell, a.kind == "aura" and "on the target" or a.kind)
+    if a.kind == "aura" then
+        text = text .. (a.anyone and ", anyone's" or ", yours")
+        if Searching(a) then text = text .. ", looking up its spell ids" end
+    end
     if a.kind == "combo" then text = text .. " at " .. (a.cp or 0) .. " points" end
     if a.kind ~= "combo" and (a.cp or 0) > 0 then text = text .. ", with " .. a.cp .. "+ combo points" end
     if a.kind == "debuff" then
@@ -1736,7 +2237,11 @@ local function Describe(i, a)
     elseif a.kind == "combo" then
         text = text .. (a.anytime and ", no target needed" or ", with an enemy target")
     end
-    if a.kind ~= "debuff" then
+    if a.kind ~= "aura" and AuraNames(a) then
+        text = text .. ", only while " .. table.concat(a.need, " or ") .. " is on the target"
+            .. (a.anyone and " (anyone's)" or "") .. (Searching(a) and ", looking up spell ids" or "")
+    end
+    if a.kind ~= "debuff" and a.kind ~= "aura" then
         if a.atPower then text = text .. ", at " .. a.atPower .. "+ energy" end
         if a.early then text = text .. ", shows " .. a.early .. " sec before its cooldown ends" end
         text = text .. ", short of energy: " .. (a.power or "dim")
@@ -1751,7 +2256,7 @@ local function Describe(i, a)
     end
     if #hides > 0 then text = text .. ", hidden while " .. table.concat(hides, ", ") end
     if a.off then text = text .. " (off)" end
-    if not AlertSpell(a) then text = text .. " (not in your spellbook)" end
+    if a.kind ~= "aura" and not AlertSpell(a) then text = text .. " (not in your spellbook)" end
     return text
 end
 
@@ -1760,6 +2265,11 @@ local HELP = {
     "/osa add <spell> - alert when it's usable, ex: /osa add Riposte",
     "/osa add <spell> combo <n> - when it's usable with n combo points, ex: /osa add Eviscerate combo 5",
     "/osa add <spell> debuff [sec] - when your debuff falls off the target, ex: /osa add Rupture debuff",
+    "/osa add <debuff> on - while the debuff is on the target, any name or spell id, ex: /osa add Frostbite on",
+    "/osa need <n> <debuff, debuff...|off> - usable or combo alert n shows only while one of these "
+        .. "debuffs is on the target, ex: /osa need 1 Frostbite, Frost Nova",
+    "/osa anyone <n> on|off - count anyone's debuff, not only yours, for an on-the-target alert or one "
+        .. "that needs debuffs",
     "/osa list - your alerts",
     "/osa remove <n> - remove alert n",
     "/osa toggle <n> - turn alert n off or on",
@@ -1791,6 +2301,55 @@ local function Alert(n)
     return DB().alerts[tonumber(n) or 0]
 end
 
+-- sets the debuffs a usable or combo alert waits for from a list, ex: "Frostbite, Frost Nova"; spell
+-- ids give their names, and "" clears it
+function OSA.SetNeed(a, text)
+    local names, seen = {}, {}
+    for part in (text or ""):gmatch("[^,;]+") do
+        local name = part:match("^%s*(.-)%s*$")
+        local id = tonumber(name)
+        if id then
+            local ok, n = pcall(C_Spell.GetSpellName, id)
+            name = ok and type(n) == "string" and not issecretvalue(n) and n or ""
+        end
+        local e = name ~= "" and Book()[name:lower()]
+        name = e and e.name or name
+        -- the game's spelling, when it knows the name
+        if not e and name ~= "" and C_Spell and C_Spell.GetSpellInfo then
+            local ok, info = pcall(C_Spell.GetSpellInfo, name)
+            if ok and type(info) == "table" and type(info.name) == "string" and not issecretvalue(info.name) then
+                name = info.name
+            end
+        end
+        if name ~= "" and not seen[name:lower()] then
+            seen[name:lower()] = true
+            table.insert(names, name)
+        end
+    end
+    a.need = #names > 0 and names or nil
+    -- ids seen are for the old names
+    a.ids = nil
+end
+
+-- adds an alert for while a debuff is on the target: any name, ex: Frostbite, which isn't in the
+-- spellbook, or a spell id, which gives its name. The alert, or nil and why not.
+function OSA.AddAura(text)
+    local name = strtrim and strtrim(text or "") or (text or ""):match("^%s*(.-)%s*$")
+    if name == "" then return nil, "no debuff name given." end
+    local id = tonumber(name)
+    if id then
+        local ok, n = pcall(C_Spell.GetSpellName, id)
+        if not (ok and type(n) == "string" and not issecretvalue(n)) then
+            return nil, ("no spell %d."):format(id)
+        end
+        name = n
+    end
+    local e = Book()[name:lower()]
+    local a = { spell = e and e.name or name, kind = "aura", ids = id and { [id] = true } or nil }
+    table.insert(DB().alerts, a)
+    return a
+end
+
 SLASH_OPCOWSSPELLALERTS1 = "/osa"
 SlashCmdList.OPCOWSSPELLALERTS = function(msg)
     local cmd, rest = (msg or ""):match("^%s*(%S*)%s*(.-)%s*$")
@@ -1800,6 +2359,16 @@ SlashCmdList.OPCOWSSPELLALERTS = function(msg)
         local name, kind, arg = rest:match("^(.-)%s+(combo)%s*(%d*)$")
         if not name then name, kind, arg = rest:match("^(.-)%s+(debuff)%s*(%d*)$") end
         if not name then name, kind = rest:match("^(.-)%s+(usable)$") end
+        if not name then
+            name, kind = rest:match("^(.-)%s+(on)$")
+            if not name then name, kind = rest:match("^(.-)%s+(aura)$") end
+            if name then
+                local a, err = OSA.AddAura(name)
+                Print(a and ("added " .. Describe(#db.alerts, a)) or err)
+                OSA.Changed()
+                return
+            end
+        end
         name, kind = name or rest, kind or "usable"
         local e = Book()[name:lower()]
         if not e then
@@ -1869,11 +2438,30 @@ SlashCmdList.OPCOWSSPELLALERTS = function(msg)
         local n, value = rest:match("^(%d+)%s+(%a+)$")
         local a = Alert(n)
         value = value and value:lower()
-        if not (a and a.kind ~= "debuff" and (value == "on" or value == "off")) then
+        if not (a and a.kind ~= "debuff" and a.kind ~= "aura" and (value == "on" or value == "off")) then
             Print("/osa anytime <n> on|off, n is a usable or combo point alert's number in /osa list.")
             return
         end
         a.anytime = value == "on" or nil
+        Print(Describe(tonumber(n), a))
+    elseif cmd == "anyone" then
+        local n, value = rest:match("^(%d+)%s+(%a+)$")
+        local a = Alert(n)
+        value = value and value:lower()
+        if not (a and AuraNames(a) and (value == "on" or value == "off")) then
+            Print("/osa anyone <n> on|off, n is the number in /osa list of an on-the-target alert or one that needs debuffs.")
+            return
+        end
+        a.anyone = value == "on" or nil
+        Print(Describe(tonumber(n), a))
+    elseif cmd == "need" then
+        local n, value = rest:match("^(%d+)%s+(.+)$")
+        local a = Alert(n)
+        if not (a and (a.kind == "usable" or a.kind == "combo") and value) then
+            Print("/osa need <n> <debuff, debuff...|off>, n is a usable or combo alert's number in /osa list.")
+            return
+        end
+        OSA.SetNeed(a, value:lower() == "off" and "" or value)
         Print(Describe(tonumber(n), a))
     elseif cmd == "hide" then
         local n, key, mode = rest:match("^(%d+)%s+(%a+)%s+(%a+)$")
@@ -1891,7 +2479,7 @@ SlashCmdList.OPCOWSSPELLALERTS = function(msg)
     elseif cmd == "energy" then
         local n, value = rest:match("^(%d+)%s+(%S+)$")
         local a = Alert(n)
-        if not (a and a.kind ~= "debuff" and (tonumber(value) or value == "off")) then
+        if not (a and a.kind ~= "debuff" and a.kind ~= "aura" and (tonumber(value) or value == "off")) then
             Print("/osa energy <n> <amount|off>, n is a usable or combo alert's number in /osa list.")
             return
         end
@@ -1976,3 +2564,5 @@ OSA.SIZE = SIZE
 OSA.POWER_MODES = POWER_MODES
 OSA.CONDITIONS = CONDITIONS
 OSA.Conds = Conds
+OSA.AuraIcon = AuraIcon
+OSA.Searching = Searching

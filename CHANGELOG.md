@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.0
+
+### Added
+
+- "A debuff is on the target" alerts: the icon shows, with a sound, while a debuff is on your target, ex: Frostbite, which procs at random. Add one with "Debuff by name..." (any name or spell id, not only your spells), by cycling Alert when, or with `/osa add Frostbite on`. In combat the game's own debuff button is shown in the icon's place, as the game hides auras from addons there; if it also hides whether that button is showing, there's no sound in combat.
+- "Only while on target" for usable and combo point alerts (`/osa need <n> Frostbite, Frost Nova`): the icon only shows while one of these debuffs is on your target, so related alerts become one icon, ex: Ice Lance while Frostbite or Frost Nova is on. In combat, when the game hides debuffs from addons, the game's own debuff button draws the spell's icon instead, so it shows only while one of them is on, with no sound.
+- "Anyone's" (`/osa anyone <n> on`): count the debuff whoever put it on the target, not only yours.
+- The first time a debuff name is added, its spell ids are looked up out of combat, which takes a few seconds; the list shows "looking up its spell ids" meanwhile.
+
 ## 0.15.0
 
 ### Added
