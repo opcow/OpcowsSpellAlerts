@@ -20,11 +20,12 @@
 - **Skip needing a target.** By default usable alerts wait for combat or an enemy target, so spells that are almost always usable don't sit on screen.
 - **Hide while** a condition is true or false: dead, in an instance, party, raid, resting, on a flight path, in combat, mounted, have a target, enemy target, friendly target, or a Fire, Earth, Water or Air totem is down.
 - Play its own **sound**: ping, raid warning, ready check, alarm, or none.
-- Have its own **icon size**.
+- Have its own **icon size**, square or not: a wide icon keeps its picture's shape and crops its top and bottom.
+- Sit **on your target's nameplate**, above it or to its left or right, and follow it.
 
 ## Icons
 
-- Each icon gets the action bar's thin dark frame.
+- Each icon gets the action bar's thin dark frame, or pick a thin or thick black edge, or none, per alert.
 - Unlock to move them. Drag an icon to move its set, **Shift-drag** to pull it out on its own, and drop it touching other icons to snap to them.
 - **Test** shows every icon for 3 seconds, so you can place them out of combat.
 

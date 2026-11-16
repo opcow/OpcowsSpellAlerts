@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.17.0
+
+### Added
+
+- "On the target's nameplate": a set of icons can sit on your target's nameplate, just above it, and follow it. Tick it on any of the set's alerts, or use `/osa plate <n> on`. Unlocked, drag the icons to place them on the plate. While the target has no nameplate showing (nameplates off, or out of view), they go back to their usual spot, which you place by dragging them then. Shift-drag an icon out of its set first to put only that one on the nameplate.
+- Nameplate side: a set on the nameplate can go above it, or to its left or right. Pick it next to "On the target's nameplate", or use `/osa plate <n> above|left|right`.
+- Icon height: an alert's icon can be wider than it's high, or higher than it's wide. The picture keeps its shape and its top and bottom, or its sides, are cut off, as Plater does. Set it next to the icon size, or use `/osa height <n> <size|off>`.
+- Icon border, per alert: the action bar's frame, a thin or thick black edge, or none. Pick it under the alert's settings, or use `/osa border <n> action|thin|thick|none`.
+
 ## 0.16.0
 
 ### Added

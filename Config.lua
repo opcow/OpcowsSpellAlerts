@@ -364,7 +364,7 @@ end
 
 local function CreateConfig()
     local f = CreateFrame("Frame", "OpcowsSpellAlertsConfig", UIParent, "BasicFrameTemplateWithInset")
-    f:SetSize(WIDTH, 812)
+    f:SetSize(WIDTH, 876)
     f:SetPoint("CENTER")
     f:SetFrameStrata("HIGH")
     f:SetToplevel(true)
@@ -443,7 +443,7 @@ local function CreateConfig()
 
     -- the selected alert -------------------------------------------------------------------------
     local edit = Box(f)
-    edit:SetSize(WIDTH - 28, 402)
+    edit:SetSize(WIDTH - 28, 466)
     edit:SetPoint("TOPLEFT", list, "BOTTOMLEFT", 0, -8)
 
     local none = Label(edit, "Select an alert in the list to change it.", "GameFontDisableSmall")
@@ -725,20 +725,67 @@ local function CreateConfig()
     Tooltip(up, "List order", "Moves it in this list. Where the icons show is set by dragging them while "
         .. "they're unlocked.")
 
-    local iconSizeLabel = Label(edit, "Icon size:", "GameFontHighlightSmall")
-    iconSizeLabel:SetPoint("LEFT", down, "RIGHT", 14, 0)
+    local iconSizeLabel = Label(edit, "Size:", "GameFontHighlightSmall")
+    iconSizeLabel:SetPoint("LEFT", down, "RIGHT", 12, 0)
     local iconSize = NumberBox(edit, 34, function() return Selected() and Selected().size or 0 end, function(n)
         local a = Selected()
         if a then a.size = n > 0 and math.max(10, math.min(200, n)) or nil end
     end)
-    iconSize:SetPoint("LEFT", iconSizeLabel, "RIGHT", 8, 0)
+    iconSize:SetPoint("LEFT", iconSizeLabel, "RIGHT", 6, 0)
+    local iconBy = Label(edit, "x", "GameFontHighlightSmall")
+    iconBy:SetPoint("LEFT", iconSize, "RIGHT", 4, 0)
+    local iconHeight = NumberBox(edit, 34, function() return Selected() and Selected().height or 0 end, function(n)
+        local a = Selected()
+        if a then a.height = n > 0 and math.max(10, math.min(200, n)) or nil end
+    end)
+    iconHeight:SetPoint("LEFT", iconBy, "RIGHT", 4, 0)
     local iconSizeHint = Label(edit, "0 = default", "GameFontDisableSmall")
-    iconSizeHint:SetPoint("LEFT", iconSize, "RIGHT", 6, 0)
-    Tooltip(iconSize, "Icon size", "This alert's own icon size, 10 to 200. Icons of different sizes snapped "
-        .. "together line up by their centres, or by an edge if you drop them that way.\n\n0 = the icon size "
-        .. "under Options.")
+    iconSizeHint:SetPoint("LEFT", iconHeight, "RIGHT", 6, 0)
+    Tooltip(iconSize, "Icon width", "This alert's own icon size, its width if it has a height too, 10 to 200. "
+        .. "Icons of different sizes snapped together line up by their centres, or by an edge if you drop "
+        .. "them that way.\n\n0 = the icon size under Options.")
+    Tooltip(iconHeight, "Icon height", "This alert's own icon height, 10 to 200, for an icon wider than it's "
+        .. "high, or higher than it's wide. The picture keeps its shape: its top and bottom, or its sides, are "
+        .. "cut off, as Plater does.\n\n0 = square, as high as it's wide.")
 
-    local editWidgets = { icon, name, on, whenLabel, when, cpLabel, cp, cpHint, condTitle, condHint, soundLabel, sound,
+    -- the set the icon's in goes on the target's nameplate
+    local plate = Check(edit, "On the target's nameplate", function(v)
+        local a = Selected()
+        if a then OSA.SetPlate(a, v) end
+    end)
+    plate:SetPoint("BOTTOMLEFT", up, "TOPLEFT", -2, 30)
+    plate:SetHitRectInsets(0, -140, 0, 0)
+    local plateSide = Cycle(edit, 80, function(dir)
+        local a = Selected()
+        if not a then return end
+        OSA.SetPlateSide(a, Step(OSA.PLATE_SIDES, OSA.PlateSideOf(a), dir))
+        OSA.Changed()
+    end)
+    plateSide:SetPoint("LEFT", plate, "RIGHT", 150, 0)
+    Tooltip(plateSide, "Side of the nameplate", "Where on the nameplate the icons go: above it, or to its "
+        .. "left or right. Changing it puts them back against the plate's edge, then drag them while "
+        .. "unlocked to move them from there.\n\nClick for the next side, right-click for the one before.")
+    Tooltip(plate, "On the target's nameplate", "The icon, and the icons snapped to it, sit on your "
+        .. "target's nameplate, above it or to its side. Unlock the icons and drag them to place them on the plate. "
+        .. "While the target has no nameplate showing, they go where they were, which you place by "
+        .. "dragging them then.\n\nNameplates must be on in the game's settings (V). Shift-drag an icon "
+        .. "out of its set first to put only that one on the nameplate.")
+
+    -- the icon's border
+    local borderLabel = Label(edit, "Border:", "GameFontHighlightSmall")
+    borderLabel:SetPoint("BOTTOMLEFT", up, "TOPLEFT", 2, 12)
+    local border = Cycle(edit, 100, function(dir)
+        local a = Selected()
+        if not a then return end
+        local b = Step(OSA.BORDERS, a.border or "action", dir)
+        a.border = b ~= "action" and b or nil
+        OSA.Changed()
+    end)
+    border:SetPoint("LEFT", borderLabel, "RIGHT", 8, 0)
+    Tooltip(border, "Border", "The icon's border: the action bar's thin dark frame with rounded corners, "
+        .. "a thin or thick black edge, or none.\n\nClick for the next one, right-click for the one before.")
+
+    local editWidgets = { borderLabel, border, plate, plateSide, iconBy, iconHeight, icon, name, on, whenLabel, when, cpLabel, cp, cpHint, condTitle, condHint, soundLabel, sound,
         play, flashLabel, flashBox, flashHint, earlyLabel, earlyBox, earlyHint, up, down, iconSizeLabel, iconSize,
         iconSizeHint }
     -- shown only for alerts that need the spell castable
@@ -876,7 +923,12 @@ local function CreateConfig()
                 or "sec before its cooldown ends, 0 = off")
             ShowNumber(lasts)
             ShowNumber(iconSize)
-            iconSizeHint:SetText("0 = default (" .. (db.size > 0 and db.size or OSA.SIZE) .. ")")
+            plate:SetChecked(OSA.OnPlate(a) and true or false)
+            plateSide:SetText(({ top = "Above", left = "Left", right = "Right" })[OSA.PlateSideOf(a)])
+            plateSide:SetEnabled(OSA.OnPlate(a) and true or false)
+            border:SetText(OSA.BORDER_NAMES[a.border or "action"])
+            ShowNumber(iconHeight)
+            iconSizeHint:SetText("0 = " .. (db.size > 0 and db.size or OSA.SIZE))
             local auto = a.kind == "debuff" and AutoDuration(a)
             lastsHint:SetText(a.duration and "sec" or (auto and ("sec, 0 = auto (" .. auto .. ")") or "sec, 0 = auto"))
             up:SetEnabled(selected > 1)

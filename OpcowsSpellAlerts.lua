@@ -93,6 +93,10 @@ local function DB()
         end
         -- its own icon size, nil = the default
         if type(a.size) ~= "number" or a.size < 10 or a.size > 200 then a.size = nil end
+        -- its own icon height, nil = as wide as it is
+        if type(a.height) ~= "number" or a.height < 10 or a.height > 200 then a.height = nil end
+        -- its icon's border, nil = the action bar's frame
+        if a.border ~= "thin" and a.border ~= "thick" and a.border ~= "none" then a.border = nil end
         -- an aura alert's spell ids seen on the target, as a set
         if type(a.ids) == "table" then
             for id in pairs(a.ids) do
@@ -1057,6 +1061,9 @@ end
 -- db.bars = { { left, top = its top left from the screen centre, cells = { { key, c, r, ha, va } } } },
 -- ha / va line an icon smaller than its column or row up to the left or top (-1) or the right or
 -- bottom (1), nil centres it.
+-- plate = true puts the set on the target's nameplate, side = nil (above it), "left" or "right", the
+-- set's edge facing the plate px, py from that side's middle. left, top is still where it goes while
+-- the target has no nameplate.
 local anchors = {}      -- [set index] = frame covering the set, what's dragged
 local dragging          -- the set being dragged
 local alertOf = {}      -- [key] = alert, filled by PlaceableKeys
@@ -1070,13 +1077,31 @@ local function Pitch()
     return Size() + GAP
 end
 
-local function KeySize(key)
+-- an icon's width and height: its size, and its own height if it has one
+local function KeyDims(key)
     local a = alertOf[key]
-    return a and a.size or Size()
+    local w = a and a.size or Size()
+    return w, a and a.height or w
 end
 
-local function KeyPitch(key)
-    return KeySize(key) + GAP
+-- its width and height with the spacing
+local function KeyPitches(key)
+    local w, h = KeyDims(key)
+    return w + GAP, h + GAP
+end
+
+-- texture coords for an icon w wide and h high: the icon's usual crop, cut down on its longer side
+-- so the picture keeps its shape, as Plater does
+local function IconCoords(w, h)
+    local l, r, t, b = 0.07, 0.93, 0.07, 0.93
+    if w > h then
+        local cut = 0.86 * (1 - h / w) / 2
+        t, b = t + cut, b - cut
+    elseif h > w then
+        local cut = 0.86 * (1 - w / h) / 2
+        l, r = l + cut, r - cut
+    end
+    return l, r, t, b
 end
 
 -- every alert's key, as a set and in the alerts' order
@@ -1114,9 +1139,9 @@ local function Geometry(bar)
     local w, h = Span(bar)
     local g = { cx = {}, cw = {}, ry = {}, rh = {} }
     for _, cell in ipairs(bar.cells) do
-        local p = KeyPitch(cell.key)
-        g.cw[cell.c] = math.max(g.cw[cell.c] or 0, p)
-        g.rh[cell.r] = math.max(g.rh[cell.r] or 0, p)
+        local pw, ph = KeyPitches(cell.key)
+        g.cw[cell.c] = math.max(g.cw[cell.c] or 0, pw)
+        g.rh[cell.r] = math.max(g.rh[cell.r] or 0, ph)
     end
     local x, y = 0, 0
     for c = 0, w - 1 do
@@ -1127,16 +1152,17 @@ local function Geometry(bar)
         g.rh[r] = g.rh[r] or Pitch()
         g.ry[r], y = y, y + g.rh[r]
     end
-    g.w, g.h = math.max(x, Pitch()), math.max(y, Pitch())
+    if #bar.cells == 0 then x, y = Pitch(), Pitch() end
+    g.w, g.h = x, y
     return g
 end
 
 -- an icon's centre from the screen centre, with every icon of its set showing
 local function CellCenter(bar, g, cell)
-    local p = KeyPitch(cell.key)
+    local pw, ph = KeyPitches(cell.key)
     local cw, rh = g.cw[cell.c], g.rh[cell.r]
-    return bar.left + g.cx[cell.c] + cw / 2 + (cell.ha or 0) * (cw - p) / 2,
-        bar.top - g.ry[cell.r] - rh / 2 - (cell.va or 0) * (rh - p) / 2
+    return bar.left + g.cx[cell.c] + cw / 2 + (cell.ha or 0) * (cw - pw) / 2,
+        bar.top - g.ry[cell.r] - rh / 2 - (cell.va or 0) * (rh - ph) / 2
 end
 
 local function TopLeftCell(bar)
@@ -1200,6 +1226,12 @@ local function CheckBars(old)
     for _, b in ipairs(old) do
         if type(b) == "table" and type(b.left) == "number" and type(b.top) == "number" and type(b.cells) == "table" then
             local bar, used = { left = b.left, top = b.top, cells = {} }, {}
+            if b.plate == true then
+                bar.plate = true
+                bar.px = type(b.px) == "number" and b.px or nil
+                bar.py = type(b.py) == "number" and b.py or nil
+                if b.side == "left" or b.side == "right" then bar.side = b.side end
+            end
             for _, cell in ipairs(b.cells) do
                 if type(cell) == "table" and type(cell.key) == "string" and type(cell.c) == "number"
                     and type(cell.r) == "number" then
@@ -1288,9 +1320,59 @@ local function SyncBars()
     return changed
 end
 
+-- the target's nameplate, nil while it has none showing or it's one addons can't use
+local function TargetPlate()
+    if not (C_NamePlate and C_NamePlate.GetNamePlateForUnit) then return nil end
+    local ok, plate = pcall(C_NamePlate.GetNamePlateForUnit, "target")
+    if not ok or type(plate) ~= "table" then return nil end
+    local okF, forbidden = pcall(plate.IsForbidden, plate)
+    if not okF or Bool(forbidden) ~= false then return nil end
+    local okV, visible = pcall(plate.IsVisible, plate)
+    if not okV or Bool(visible) ~= true then return nil end
+    return plate
+end
+
+-- per side: the set's point, the plate's point and the gap between them
+local PLATE_SIDES = {
+    top = { "BOTTOM", "TOP", 0, 4 },
+    left = { "RIGHT", "LEFT", -4, 0 },
+    right = { "LEFT", "RIGHT", 4, 0 },
+}
+OSA.PLATE_SIDES = { "top", "left", "right" }
+
+local function PlateSide(bar)
+    return PLATE_SIDES[bar.side or "top"] or PLATE_SIDES.top
+end
+
+-- the middle of the plate's side, or its top, from the screen centre in the icons' units
+local function PlatePoint(plate, side)
+    local function Get(m)
+        local ok, v, w = pcall(plate[m], plate)
+        if ok then return Num(v), Num(w) end
+    end
+    local cx, cy = Get("GetCenter")
+    local x, y = cx, cy
+    if side == "left" then x = Get("GetLeft")
+    elseif side == "right" then x = Get("GetRight")
+    else y = Get("GetTop") end
+    local s = Get("GetEffectiveScale")
+    local ux, uy = UIParent:GetCenter()
+    if not (x and y and s and ux) then return nil end
+    s = s / UIParent:GetEffectiveScale()
+    return x * s - ux, y * s - uy
+end
+
+-- the set's own point facing the plate, from the screen centre, as placed by left, top
+local function BarPoint(bar, g, side)
+    if side == "left" then return bar.left + g.w, bar.top - g.h / 2 end
+    if side == "right" then return bar.left, bar.top - g.h / 2 end
+    return bar.left + g.w / 2, bar.top - g.h
+end
+
 local function ApplyLayout()
     local db = DB()
     SyncBars()
+    local plate
     for i, bar in ipairs(db.bars) do
         local a = anchors[i]
         if not a then
@@ -1303,10 +1385,110 @@ local function ApplyLayout()
         local g = Geometry(bar)
         a:SetSize(g.w, g.h)
         a:ClearAllPoints()
-        a:SetPoint("CENTER", UIParent, "CENTER", bar.left + g.w / 2, bar.top - g.h / 2)
+        a.plate = nil
+        if bar.plate then
+            if plate == nil then plate = TargetPlate() or false end
+            local ps = PlateSide(bar)
+            if plate and pcall(a.SetPoint, a, ps[1], plate, ps[2], bar.px or ps[3], bar.py or ps[4]) then
+                a.plate = plate
+            else
+                a:ClearAllPoints()
+            end
+        end
+        if not a.plate then
+            a:SetPoint("CENTER", UIParent, "CENTER", bar.left + g.w / 2, bar.top - g.h / 2)
+        end
         a:Show()
     end
     for i = #db.bars + 1, #anchors do anchors[i]:Hide() end
+end
+
+-- while dragging, the sets on a nameplate get left, top where they are on screen, so pulling
+-- icons out and snapping work as for any set. home keeps where they go without a nameplate.
+local function Unplate()
+    local ux, uy = UIParent:GetCenter()
+    for i, bar in ipairs(DB().bars) do
+        local a = anchors[i]
+        local ok, ax, ay = false
+        if a and a.plate then ok, ax, ay = pcall(a.GetCenter, a) end
+        ax, ay = ok and Num(ax), ok and Num(ay)
+        if ax and ay and ux then
+            local g = Geometry(bar)
+            bar.home = { bar.left, bar.top }
+            bar.left, bar.top = ax - ux - g.w / 2, ay - uy + g.h / 2
+            bar.screen = { bar.left, bar.top }
+        end
+    end
+end
+
+-- after a drag: a set on a nameplate keeps its new place from the plate, and its spot without one.
+-- dropped is the set that was dragged.
+local function Replate(dropped)
+    local plate = TargetPlate()
+    for _, bar in ipairs(DB().bars) do
+        if bar.plate and (bar.home or bar == dropped) then
+            local g = Geometry(bar)
+            local moved = bar.screen and { bar.left - bar.screen[1], bar.top - bar.screen[2] }
+            local x, y
+            if plate then x, y = PlatePoint(plate, bar.side) end
+            if x then
+                local bx, by = BarPoint(bar, g, bar.side)
+                bar.px = math.floor(bx - x + 0.5)
+                bar.py = math.floor(by - y + 0.5)
+                -- the one dragged keeps its spot without a plate, a set something snapped onto
+                -- grows the same way there
+                if bar.home then
+                    bar.left, bar.top = bar.home[1], bar.home[2]
+                    if bar ~= dropped and moved then
+                        bar.left, bar.top = bar.left + moved[1], bar.top + moved[2]
+                    end
+                end
+            elseif bar.home and bar ~= dropped then
+                -- the plate went away mid-drag: it stays on the plate where it was
+                bar.left, bar.top = bar.home[1] + (moved and moved[1] or 0), bar.home[2] + (moved and moved[2] or 0)
+            end
+        end
+        bar.home, bar.screen = nil, nil
+    end
+end
+
+-- the set an alert's icon is in
+local function BarOf(a)
+    local key = AlertKey(a)
+    for _, bar in ipairs(DB().bars or {}) do
+        for _, cell in ipairs(bar.cells) do
+            if cell.key == key then return bar end
+        end
+    end
+end
+
+function OSA.OnPlate(a)
+    local bar = BarOf(a)
+    return bar and bar.plate or false
+end
+
+-- put the set alert a is in on the target's nameplate, or take it off
+function OSA.SetPlate(a, on)
+    SyncBars()
+    local bar = BarOf(a)
+    if not bar then return end
+    bar.plate = on and true or nil
+    ApplyLayout()
+end
+
+function OSA.PlateSideOf(a)
+    local bar = BarOf(a)
+    return bar and bar.side or "top"
+end
+
+-- which side of the plate the alert's set goes, which puts it back to the plate's edge
+function OSA.SetPlateSide(a, side)
+    SyncBars()
+    local bar = BarOf(a)
+    if not bar or not PLATE_SIDES[side] then return end
+    bar.side = side ~= "top" and side or nil
+    bar.px, bar.py = nil, nil
+    ApplyLayout()
 end
 
 local function BarIndex(bar)
@@ -1325,19 +1507,21 @@ local function PlaceIcons(bar, showing)
         for _, cell in ipairs(bar.cells) do
             if showing[cell.key] then
                 table.insert(list, cell)
-                total = total + KeyPitch(cell.key)
+                local pw, ph = KeyPitches(cell.key)
+                total = total + (shape == "column" and ph or pw)
             end
         end
         table.sort(list, function(p, q) return p.c + p.r < q.c + q.r end)
         local pos = -total / 2
         for _, cell in ipairs(list) do
-            local p = KeyPitch(cell.key)
+            local pw, ph = KeyPitches(cell.key)
+            local p = shape == "column" and ph or pw
             local d = pos + p / 2
             pos = pos + p
             if shape == "column" then
-                table.insert(out, { key = cell.key, x = (cell.ha or 0) * (g.w - p) / 2, y = -d })
+                table.insert(out, { key = cell.key, x = (cell.ha or 0) * (g.w - pw) / 2, y = -d })
             else
-                table.insert(out, { key = cell.key, x = d, y = -(cell.va or 0) * (g.h - p) / 2 })
+                table.insert(out, { key = cell.key, x = d, y = -(cell.va or 0) * (g.h - ph) / 2 })
             end
         end
     else
@@ -1428,7 +1612,7 @@ local function SnapBar(d)
     local dg = Geometry(d)
     local drop = {}
     for _, cell in ipairs(d.cells) do drop[cell] = { CellCenter(d, dg, cell) } end
-    local limit = 0.75 * KeyPitch(TopLeftCell(d).key)
+    local limit = 0.75 * math.min(KeyPitches(TopLeftCell(d).key))
     local dShape = Shape(d)
     local dw, dh = Span(d)
     local best, bestDist
@@ -1477,6 +1661,7 @@ local function IconDragStart(f)
     if not db.unlocked or dragging or not f.bar or not BarIndex(f.bar) then return end
     GameTooltip:Hide()
     local bar = f.bar
+    Unplate()
     if IsShiftKeyDown() and #bar.cells > 1 then
         local idx
         for j, cell in ipairs(bar.cells) do
@@ -1496,8 +1681,8 @@ local function IconDragStart(f)
                 end
             end
             Normalize(bar, pin)
-            local half = KeyPitch(f.key) / 2
-            bar = { left = x - half, top = y + half, cells = { { key = f.key, c = 0, r = 0 } } }
+            local pw, ph = KeyPitches(f.key)
+            bar = { left = x - pw / 2, top = y + ph / 2, cells = { { key = f.key, c = 0, r = 0 } } }
             table.insert(db.bars, bar)
             OSA.Update()
         end
@@ -1511,16 +1696,18 @@ function OSA.IconDragStop()
     if not bar then return end
     dragging = nil
     local i = BarIndex(bar)
-    if not i then return end
+    if not i then Replate() return end
     local a = anchors[i]
     a:StopMovingOrSizing()
     local ax, ay = a:GetCenter()
     local ux, uy = UIParent:GetCenter()
-    if ax and ux then
+    ax, ay = Num(ax), Num(ay)
+    if ax and ay and ux then
         local g = Geometry(bar)
         bar.left, bar.top = ax - ux - g.w / 2, ay - uy + g.h / 2
     end
     SnapBar(bar)
+    Replate(bar)
     ApplyLayout()
     OSA.Update()
 end
@@ -1534,6 +1721,10 @@ local function IconTooltip(f)
     GameTooltip:AddLine("Drag to move it with the icons it's snapped to.", 1, 1, 1)
     GameTooltip:AddLine("Shift-drag to pull it away on its own.", 1, 1, 1)
     GameTooltip:AddLine("Drop it touching other icons, on any side, to snap to them.", 1, 1, 1)
+    if f.bar and f.bar.plate then
+        GameTooltip:AddLine("On your target's nameplate: drag it to place it on the plate. With no "
+            .. "nameplate showing, drag it to place it for then.", 0.4, 0.8, 1, true)
+    end
     GameTooltip:AddLine("Its size is set in the options window, /osa.", 0.6, 0.6, 0.6)
     GameTooltip:Show()
 end
@@ -1554,31 +1745,74 @@ local function HasAtlas(name)
     return C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(name) ~= nil or false
 end
 
+-- an icon's border: the action bar's frame, a thin or thick black edge, or none
+local BORDER_LINES = { thin = 1, thick = 3 }
+OSA.BORDERS = { "action", "thin", "thick", "none" }
+OSA.BORDER_NAMES = { action = "Action bar", thin = "Thin black", thick = "Thick black", none = "None" }
+
+local function BorderOf(a)
+    local b = a and a.border
+    if b == "thin" or b == "thick" or b == "none" then return b end
+    -- without the action bar's art: a thin black edge
+    return HasAtlas(ICON_FRAME) and "action" or "thin"
+end
+
+-- draws s's border in style, redrawing only what changed. s = { host = the icon's frame, over = the
+-- frame its edge textures go on, masked = the textures the action bar frame rounds the corners of }
+local function StyleBorder(s, style)
+    if s.style == style then return end
+    s.style = style
+    local action = style == "action"
+    if action and not s.art then
+        s.art = s.over:CreateTexture(nil, "OVERLAY", nil, 2)
+        s.art:SetAtlas(ICON_FRAME)
+        s.art:SetAllPoints(s.host)
+    end
+    if s.art then s.art:SetShown(action) end
+    local canMask = HasAtlas(ICON_MASK) and s.host.CreateMaskTexture and s.masked[1].AddMaskTexture
+    if action and canMask and not s.isMasked then
+        if not s.mask then
+            s.mask = s.host:CreateMaskTexture()
+            s.mask:SetAtlas(ICON_MASK)
+            s.mask:SetAllPoints(s.host)
+        end
+        for _, t in ipairs(s.masked) do t:AddMaskTexture(s.mask) end
+        s.isMasked = true
+    elseif not action and s.isMasked then
+        for _, t in ipairs(s.masked) do t:RemoveMaskTexture(s.mask) end
+        s.isMasked = false
+    end
+    local px = BORDER_LINES[style]
+    if px and not s.lines then
+        s.lines = {}
+        for i = 1, 4 do
+            local t = s.over:CreateTexture(nil, "OVERLAY", nil, 2)
+            t:SetColorTexture(0, 0, 0, 1)
+            s.lines[i] = t
+        end
+    end
+    if s.lines then
+        local top, bottom, left, right = unpack(s.lines)
+        if px then
+            -- lines over the icon's edges, so the icon keeps its size
+            top:ClearAllPoints(); top:SetPoint("TOPLEFT", s.host); top:SetPoint("TOPRIGHT", s.host)
+            top:SetHeight(px)
+            bottom:ClearAllPoints(); bottom:SetPoint("BOTTOMLEFT", s.host); bottom:SetPoint("BOTTOMRIGHT", s.host)
+            bottom:SetHeight(px)
+            left:ClearAllPoints(); left:SetPoint("TOPLEFT", s.host); left:SetPoint("BOTTOMLEFT", s.host)
+            left:SetWidth(px)
+            right:ClearAllPoints(); right:SetPoint("TOPRIGHT", s.host); right:SetPoint("BOTTOMRIGHT", s.host)
+            right:SetWidth(px)
+        end
+        for _, t in ipairs(s.lines) do t:SetShown(px and true or false) end
+    end
+end
+
 local function MakeIcon(i)
     local f = CreateFrame("Frame", nil, holder)
     f.tex = f:CreateTexture(nil, "ARTWORK")
     f.tex:SetTexCoord(0.07, 0.93, 0.07, 0.93)
-    -- the action bar button's thin dark frame with rounded corners, the icon cut to fit inside it.
-    -- Without that art: a thin black edge.
-    local mask
-    if HasAtlas(ICON_FRAME) then
-        f.tex:SetAllPoints()
-        f.edge = f:CreateTexture(nil, "OVERLAY", nil, 2)
-        f.edge:SetAtlas(ICON_FRAME)
-        f.edge:SetAllPoints()
-        if HasAtlas(ICON_MASK) and f.tex.AddMaskTexture and f.CreateMaskTexture then
-            mask = f:CreateMaskTexture()
-            mask:SetAtlas(ICON_MASK)
-            mask:SetAllPoints(f.tex)
-            f.tex:AddMaskTexture(mask)
-        end
-    else
-        f.edge = f:CreateTexture(nil, "BACKGROUND")
-        f.edge:SetAllPoints()
-        f.edge:SetColorTexture(0, 0, 0, 1)
-        f.tex:SetPoint("TOPLEFT", 1, -1)
-        f.tex:SetPoint("BOTTOMRIGHT", -1, 1)
-    end
+    f.tex:SetAllPoints()
     f.count = f:CreateFontString(nil, "OVERLAY", "NumberFontNormalLarge")
     f.count:SetPoint("BOTTOMRIGHT", -3, 3)
     -- shown early: a shade over the icon and the seconds left on the cooldown
@@ -1594,11 +1828,9 @@ local function MakeIcon(i)
     f.queued:SetTexture("Interface\\Buttons\\CheckButtonHilight")
     f.queued:SetBlendMode("ADD")
     f.queued:Hide()
-    -- the shade and the light take the icon's rounded corners too
-    if mask then
-        f.shade:AddMaskTexture(mask)
-        f.queued:AddMaskTexture(mask)
-    end
+    -- the border, set by the alert shown in it. The shade and the light take the icon's rounded
+    -- corners too.
+    f.border = { host = f, over = f, masked = { f.tex, f.shade, f.queued } }
     -- takes the mouse only while unlocked, to be dragged
     f:EnableMouse(false)
     f:RegisterForDrag("LeftButton")
@@ -1669,10 +1901,11 @@ local function InitLiveButton(l, button)
         pcall(button.EnableMouse, button, false)
         button:ClearAllPoints()
         button:SetPoint("CENTER", button:GetParent(), "CENTER", 0, 0)
-        button:SetSize(l.size, l.size)
+        button:SetSize(l.w, l.h)
         local tex = button:CreateTexture(nil, "ARTWORK")
         tex:SetAllPoints()
-        tex:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+        tex:SetTexCoord(IconCoords(l.w, l.h))
+        l.tex = tex
         button:SetIcon(tex)
         if l.gate then
             -- a gate draws the alert's spell, ex: Ice Lance, not the debuff the game fills it with.
@@ -1680,19 +1913,11 @@ local function InitLiveButton(l, button)
             tex:SetAlpha(0)
             local face = button:CreateTexture(nil, "ARTWORK", nil, 1)
             face:SetAllPoints()
-            face:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+            face:SetTexCoord(IconCoords(l.w, l.h))
+            l.face = face
             face:SetTexture(l.icon or 134400)
-            if HasAtlas(ICON_FRAME) then
-                local edge = button:CreateTexture(nil, "OVERLAY", nil, 2)
-                edge:SetAtlas(ICON_FRAME)
-                edge:SetAllPoints(button)
-                if HasAtlas(ICON_MASK) and face.AddMaskTexture and button.CreateMaskTexture then
-                    local mask = button:CreateMaskTexture()
-                    mask:SetAtlas(ICON_MASK)
-                    mask:SetAllPoints(face)
-                    face:AddMaskTexture(mask)
-                end
-            end
+            l.border = { host = button, over = button, masked = { face } }
+            StyleBorder(l.border, l.style)
             return
         end
         local cd = CreateFrame("Cooldown", nil, button, "CooldownFrameTemplate")
@@ -1705,17 +1930,8 @@ local function InitLiveButton(l, button)
         local over = CreateFrame("Frame", nil, button)
         over:SetAllPoints()
         over:SetFrameLevel(cd:GetFrameLevel() + 2)
-        if HasAtlas(ICON_FRAME) then
-            local edge = over:CreateTexture(nil, "OVERLAY", nil, 2)
-            edge:SetAtlas(ICON_FRAME)
-            edge:SetAllPoints(button)
-            if HasAtlas(ICON_MASK) and tex.AddMaskTexture and button.CreateMaskTexture then
-                local mask = button:CreateMaskTexture()
-                mask:SetAtlas(ICON_MASK)
-                mask:SetAllPoints(tex)
-                tex:AddMaskTexture(mask)
-            end
-        end
+        l.border = { host = button, over = over, masked = { tex } }
+        StyleBorder(l.border, l.style)
         local count = over:CreateFontString(nil, "OVERLAY", "NumberFontNormalLarge")
         count:SetPoint("BOTTOMRIGHT", -3, 3)
         local fm = CountFormatter()
@@ -1727,20 +1943,22 @@ end
 -- a holder with a container on the target, whose one slot the game fills while one of the ids is on
 -- it. The holder is ours, so it can be moved and faded in combat.
 local function MakeLive(a, ids, key)
-    local l = { filter = AuraFilter(a), size = a.size or Size(), gate = a.kind ~= "aura" or nil }
+    local w = a.size or Size()
+    local l = { filter = AuraFilter(a), w = w, h = a.height or w, gate = a.kind ~= "aura" or nil,
+        style = BorderOf(a) }
     if l.gate then
         local id = AlertSpell(a)
         l.icon = id and SpellIcon(id) or nil
     end
     l.holder = CreateFrame("Frame", nil, UIParent)
-    l.holder:SetSize(l.size, l.size)
+    l.holder:SetSize(l.w, l.h)
     l.holder:SetPoint("CENTER")
     l.holder:SetFrameLevel(holder:GetFrameLevel() + 20)
     l.holder:SetAlpha(0)
     local ok, err = pcall(function()
         local c = CreateFrame("AuraContainer", nil, l.holder, "CustomAuraContainerTemplate")
         c:SetPoint("CENTER")
-        c:SetSize(l.size, l.size)
+        c:SetSize(l.w, l.h)
         c:SetUnit("target")
         pcall(c.EnableMouse, c, false)
         l.container = c
@@ -1784,13 +2002,19 @@ local function UpdateLive()
                     LIVE_SLOT, { includeSpellIDs = ids }) then
                     l.ids = key
                 end
-                local size = a.size or Size()
-                if size ~= l.size then
-                    l.size = size
-                    pcall(l.holder.SetSize, l.holder, size, size)
-                    pcall(l.container.SetSize, l.container, size, size)
-                    if l.button then pcall(l.button.SetSize, l.button, size, size) end
+                local w = a.size or Size()
+                local h = a.height or w
+                if w ~= l.w or h ~= l.h then
+                    l.w, l.h = w, h
+                    pcall(l.holder.SetSize, l.holder, w, h)
+                    pcall(l.container.SetSize, l.container, w, h)
+                    if l.button then pcall(l.button.SetSize, l.button, w, h) end
+                    for _, t in ipairs({ l.tex or false, l.face or false }) do
+                        if t then pcall(t.SetTexCoord, t, IconCoords(w, h)) end
+                    end
                 end
+                l.style = BorderOf(a)
+                if l.border then pcall(StyleBorder, l.border, l.style) end
             end
         end
     end
@@ -1910,8 +2134,10 @@ function OSA.Update()
             local f = icons[shown] or MakeIcon(shown)
             f.key, f.bar = p.key, bar
             local id = AlertSpell(a)
-            local size = KeySize(p.key)
-            f:SetSize(size, size)
+            local w, h = KeyDims(p.key)
+            f:SetSize(w, h)
+            f.tex:SetTexCoord(IconCoords(w, h))
+            StyleBorder(f.border, BorderOf(a))
             f:ClearAllPoints()
             f:SetPoint("CENTER", anchors[bi], "CENTER", p.x, p.y)
             f:EnableMouse(db.unlocked and true or false)
@@ -2094,6 +2320,9 @@ Register("PLAYER_ENTERING_WORLD")
 Register("SPELLS_CHANGED")
 Register("LEARNED_SPELL_IN_TAB")
 Register("PLAYER_TARGET_CHANGED")
+-- sets on the target's nameplate move to it, or off it, at once
+Register("NAME_PLATE_UNIT_ADDED")
+Register("NAME_PLATE_UNIT_REMOVED")
 Register("PLAYER_REGEN_DISABLED")
 Register("PLAYER_REGEN_ENABLED")
 Register("SPELL_UPDATE_USABLE")
@@ -2248,6 +2477,8 @@ local function Describe(i, a)
     end
     if a.flash then text = text .. ", fades out after " .. a.flash .. " sec" end
     if a.size then text = text .. ", icon size " .. a.size end
+    if a.height then text = text .. ", icon height " .. a.height end
+    if a.border then text = text .. ", border " .. OSA.BORDER_NAMES[a.border]:lower() end
     text = text .. ", sound " .. (a.sound or "ping")
     local hides = {}
     for _, k in ipairs(CONDITIONS) do
@@ -2288,6 +2519,9 @@ local HELP = {
         .. "ex: /osa hide 1 combat false. Conditions: " .. table.concat(CONDITIONS, ", "),
     "/osa size <size> - every icon's size, 0 = " .. SIZE,
     "/osa size <n> <size|off> - alert n's own icon size, off = the size above",
+    "/osa plate <n> on|off|above|left|right - put alert n's icon, and the icons snapped to it, on your target's nameplate",
+    "/osa height <n> <size|off> - alert n's own icon height, the picture is cropped to fit, off = square",
+    "/osa border <n> action|thin|thick|none - alert n's icon border: the action bar's frame, a thin or thick black edge, or none",
     "/osa lock - lock or unlock the icons. Unlocked, drag an icon to move its set, Shift-drag to pull "
         .. "it out on its own, drop it touching other icons to snap to them",
     "/osa reset - put every icon back in one row",
@@ -2506,6 +2740,40 @@ SlashCmdList.OPCOWSSPELLALERTS = function(msg)
         end
         a.size = px > 0 and math.max(10, math.min(200, px)) or nil
         Print(Describe(tonumber(n), a))
+    elseif cmd == "height" then
+        local n, value = rest:match("^(%d+)%s+(%S+)$")
+        local a = Alert(n)
+        local px = value and (value:lower() == "off" and 0 or tonumber(value))
+        if not (a and px) then
+            Print("/osa height <n> <size|off>, n is the alert's number in /osa list.")
+            return
+        end
+        a.height = px > 0 and math.max(10, math.min(200, px)) or nil
+        Print(Describe(tonumber(n), a))
+    elseif cmd == "border" then
+        local n, value = rest:match("^(%d+)%s+(%a+)$")
+        local a = Alert(n)
+        value = value and value:lower()
+        if not (a and OSA.BORDER_NAMES[value or ""]) then
+            Print("/osa border <n> action|thin|thick|none, n is the alert's number in /osa list.")
+            return
+        end
+        a.border = value ~= "action" and value or nil
+        Print(Describe(tonumber(n), a))
+    elseif cmd == "plate" then
+        local n, value = rest:match("^(%d+)%s+(%a+)$")
+        local a = Alert(n)
+        value = value and value:lower()
+        local side = ({ above = "top", top = "top", left = "left", right = "right" })[value or ""]
+        if not (a and (value == "on" or value == "off" or side)) then
+            Print("/osa plate <n> on|off|above|left|right, n is the alert's number in /osa list. Its whole set moves.")
+            return
+        end
+        if side then OSA.SetPlateSide(a, side) end
+        OSA.SetPlate(a, value ~= "off")
+        local where = ({ top = "above", left = "left of", right = "right of" })[OSA.PlateSideOf(a)]
+        Print(a.spell .. (value ~= "off" and ("'s set is " .. where .. " your target's nameplate, or where it "
+            .. "was while the target has none.") or "'s set is back in its own spot."))
     elseif cmd == "lock" or cmd == "unlock" then
         db.unlocked = not db.unlocked or nil
         Print(db.unlocked and "unlocked: drag an icon to move its set, Shift-drag to pull it out on its own."
