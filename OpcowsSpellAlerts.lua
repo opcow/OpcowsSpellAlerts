@@ -2015,6 +2015,16 @@ local function UpdateLive()
                 end
                 l.style = BorderOf(a)
                 if l.border then pcall(StyleBorder, l.border, l.style) end
+                -- at login the spellbook can still be empty, so the gate's spell icon is read again
+                -- until it's found, else the button keeps the question mark
+                if l.gate then
+                    local id = AlertSpell(a)
+                    local icon = id and SpellIcon(id) or nil
+                    if icon and icon ~= l.icon then
+                        l.icon = icon
+                        if l.face then pcall(l.face.SetTexture, l.face, icon) end
+                    end
+                end
             end
         end
     end

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.18.0
+
+### Fixed
+
+- An alert with "Only while on target", ex: Ice Lance while Frostbite or Frost Nova is on the target, could show a question mark instead of the spell's icon in combat. Its icon was read once at login, sometimes before the spellbook had loaded.
+
 ## 0.17.0
 
 ### Added
