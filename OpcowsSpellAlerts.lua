@@ -95,8 +95,8 @@ local function DB()
         if type(a.size) ~= "number" or a.size < 10 or a.size > 200 then a.size = nil end
         -- its own icon height, nil = as wide as it is
         if type(a.height) ~= "number" or a.height < 10 or a.height > 200 then a.height = nil end
-        -- its icon's border, nil = the action bar's frame
-        if a.border ~= "thin" and a.border ~= "thick" and a.border ~= "none" then a.border = nil end
+        -- its icon's border, nil = a thin black edge
+        if a.border ~= "action" and a.border ~= "thick" and a.border ~= "none" then a.border = nil end
         -- an aura alert's spell ids seen on the target, as a set
         if type(a.ids) == "table" then
             for id in pairs(a.ids) do
@@ -1745,16 +1745,18 @@ local function HasAtlas(name)
     return C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(name) ~= nil or false
 end
 
--- an icon's border: the action bar's frame, a thin or thick black edge, or none
+-- an icon's border: a thin black edge (the default, a.border nil), the action bar's frame, a thick
+-- black edge, or none
 local BORDER_LINES = { thin = 1, thick = 3 }
-OSA.BORDERS = { "action", "thin", "thick", "none" }
+OSA.BORDERS = { "thin", "action", "thick", "none" }
 OSA.BORDER_NAMES = { action = "Action bar", thin = "Thin black", thick = "Thick black", none = "None" }
 
 local function BorderOf(a)
     local b = a and a.border
-    if b == "thin" or b == "thick" or b == "none" then return b end
+    if b == "thick" or b == "none" then return b end
     -- without the action bar's art: a thin black edge
-    return HasAtlas(ICON_FRAME) and "action" or "thin"
+    if b == "action" and HasAtlas(ICON_FRAME) then return "action" end
+    return "thin"
 end
 
 -- draws s's border in style, redrawing only what changed. s = { host = the icon's frame, over = the
@@ -2768,7 +2770,7 @@ SlashCmdList.OPCOWSSPELLALERTS = function(msg)
             Print("/osa border <n> action|thin|thick|none, n is the alert's number in /osa list.")
             return
         end
-        a.border = value ~= "action" and value or nil
+        a.border = value ~= "thin" and value or nil
         Print(Describe(tonumber(n), a))
     elseif cmd == "plate" then
         local n, value = rest:match("^(%d+)%s+(%a+)$")

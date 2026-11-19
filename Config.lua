@@ -777,13 +777,14 @@ local function CreateConfig()
     local border = Cycle(edit, 100, function(dir)
         local a = Selected()
         if not a then return end
-        local b = Step(OSA.BORDERS, a.border or "action", dir)
-        a.border = b ~= "action" and b or nil
+        local b = Step(OSA.BORDERS, a.border or "thin", dir)
+        a.border = b ~= "thin" and b or nil
         OSA.Changed()
     end)
     border:SetPoint("LEFT", borderLabel, "RIGHT", 8, 0)
-    Tooltip(border, "Border", "The icon's border: the action bar's thin dark frame with rounded corners, "
-        .. "a thin or thick black edge, or none.\n\nClick for the next one, right-click for the one before.")
+    Tooltip(border, "Border", "The icon's border: a thin black edge (the default), the action bar's thin dark "
+        .. "frame with rounded corners, a thick black edge, or none.\n\nClick for the next one, right-click for "
+        .. "the one before.")
 
     local editWidgets = { borderLabel, border, plate, plateSide, iconBy, iconHeight, icon, name, on, whenLabel, when, cpLabel, cp, cpHint, condTitle, condHint, soundLabel, sound,
         play, flashLabel, flashBox, flashHint, earlyLabel, earlyBox, earlyHint, up, down, iconSizeLabel, iconSize,
@@ -926,7 +927,7 @@ local function CreateConfig()
             plate:SetChecked(OSA.OnPlate(a) and true or false)
             plateSide:SetText(({ top = "Above", left = "Left", right = "Right" })[OSA.PlateSideOf(a)])
             plateSide:SetEnabled(OSA.OnPlate(a) and true or false)
-            border:SetText(OSA.BORDER_NAMES[a.border or "action"])
+            border:SetText(OSA.BORDER_NAMES[a.border or "thin"])
             ShowNumber(iconHeight)
             iconSizeHint:SetText("0 = " .. (db.size > 0 and db.size or OSA.SIZE))
             local auto = a.kind == "debuff" and AutoDuration(a)

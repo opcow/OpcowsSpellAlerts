@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.19.0
+
+### Changed
+
+- Icons get a thin black edge by default instead of the action bar's frame. Alerts that never had a border picked switch to it; pick "Action bar" under the alert's settings, or use `/osa border <n> action`, to get the frame back.
+
 ## 0.18.0
 
 ### Fixed

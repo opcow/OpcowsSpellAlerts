@@ -25,7 +25,7 @@
 
 ## Icons
 
-- Each icon gets the action bar's thin dark frame, or pick a thin or thick black edge, or none, per alert.
+- Each icon gets a thin black edge, or pick the action bar's thin dark frame, a thick black edge, or none, per alert.
 - Unlock to move them. Drag an icon to move its set, **Shift-drag** to pull it out on its own, and drop it touching other icons to snap to them.
 - **Test** shows every icon for 3 seconds, so you can place them out of combat.
 
