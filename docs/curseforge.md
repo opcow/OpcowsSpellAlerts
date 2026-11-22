@@ -17,6 +17,7 @@
 - **Want combo points** too, ex: Rupture fell off but only alert at 4 points.
 - **Only show while on target:** only while one of a list of debuffs is on your target, so related alerts become one icon, ex: Ice Lance while Frostbite or Frost Nova is on.
 - **Show for a few seconds** when it comes on, fading in and out, ex: Sprint coming off cooldown.
+- **Change its look** while your energy, the target's health or your combo points compare to numbers, with conditions joined by "and" and "or": dim it, make it glow, grey it, or tint it red, green or blue. Ex: Slice and Dice glowing at 5 combo points unless the target is under 10% health, or Shank dimmed above 80 energy, when it would waste energy. It works in combat too, when the game hides your energy and the target's health from addons.
 - **Skip needing a target.** By default usable alerts wait for combat or an enemy target, so spells that are almost always usable don't sit on screen.
 - **Hide while** a condition is true or false: dead, in an instance, party, raid, resting, on a flight path, in combat, mounted, have a target, enemy target, friendly target, or a Fire, Earth, Water or Air totem is down.
 - Play its own **sound**: ping, raid warning, ready check, alarm, or none.
@@ -31,7 +32,7 @@
 
 ## Getting started
 
-1. Type `/osa`, or click the minimap button or the addon compartment, to open the options window.
+1. Type `/osa`, or click the minimap button or the addon compartment, to open the options window. Shift-click either to unlock or lock the icons.
 2. Click **Add spell...**, or drag a spell from your spellbook onto the list.
 3. Pick when it alerts, then set anything else you like.
 

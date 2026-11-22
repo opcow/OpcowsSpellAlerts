@@ -12,6 +12,7 @@ Each alert can also:
 - Dim or hide while the spell waits on energy, rage or mana, or wait for a minimum amount.
 - Show early with a countdown before its cooldown ends or its debuff falls off.
 - Flash for a few seconds when it comes on.
+- Change its look while your energy, the target's health or your combo points compare to numbers, conditions joined by and/or: dim, glow, grey, or a red, green or blue tint. Ex: Slice and Dice glowing at 5 combo points and target health >= 10%, or Shank dimmed above 80 energy. Click **Look...** in the alert's settings.
 - Only show while one of a list of debuffs is on your target, so related alerts become one icon, ex: Ice Lance while Frostbite or Frost Nova is on.
 - Skip needing a target. By default usable alerts wait for combat or an enemy target, and combo point alerts for an enemy target.
 - Hide while a condition is true or false, ex: out of combat, or while your target isn't friendly.
@@ -22,6 +23,6 @@ Unlock the icons to move them. Drag an icon to move its set, Shift-drag to pull 
 
 ## Use
 
-Type `/osa` or click the minimap button to open the options window. Everything can be set there.
+Type `/osa` or click the minimap button to open the options window. Everything can be set there. Shift-click the minimap button to unlock or lock the icons.
 
 `/osa help` lists the slash commands, ex: `/osa add Eviscerate combo 5`.

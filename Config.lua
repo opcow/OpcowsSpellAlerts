@@ -266,6 +266,204 @@ local function Picker(parent, title, width, height)
     return p
 end
 
+-- the selected alert's looks, a panel beside the window: each look is an effect and its conditions,
+-- joined by and/or. alert() gives the alert or nil.
+local function LooksPanel(parent, alert)
+    local MAX, MAX_CONDS, MAX_TOTAL = OSA.MAX_LOOKS, OSA.MAX_CONDS, 12
+    local LINE, TOP = 26, 78
+    local p = Box(parent, "Interface\\DialogFrame\\UI-DialogBox-Background")
+    -- the height is set in Refresh
+    p:SetSize(330, TOP + 100)
+    p:SetFrameStrata("DIALOG")
+    p:EnableMouse(true)
+    p:SetClampedToScreen(true)
+    p:Hide()
+    p.title = Label(p, "Look")
+    p.title:SetPoint("TOPLEFT", 10, -9)
+    local close = CreateFrame("Button", nil, p, "UIPanelCloseButton")
+    close:SetSize(24, 24)
+    close:SetPoint("TOPRIGHT", -2, -2)
+    close:SetScript("OnClick", function() p:Hide() end)
+    local help = Label(p, "Change the icon while it shows. Each look's effect shows while its conditions hold. "
+        .. "\"and\" goes before \"or\": a and b or c is (a and b) or c.", "GameFontHighlightSmall")
+    help:SetPoint("TOPLEFT", 12, -32)
+    help:SetPoint("RIGHT", p, "RIGHT", -12, 0)
+    help:SetWordWrap(true)
+
+    local CYCLE_HINT = "\n\nClick for the next one, right-click for the one before."
+    local function Total(a)
+        local n = 0
+        for _, look in ipairs(a.looks or {}) do n = n + #look.conds end
+        return n
+    end
+
+    -- pooled lines: a look's header, and its conditions under it
+    local heads, rows = {}, {}
+    local function Head(i)
+        if heads[i] then return heads[i] end
+        local h = {}
+        h.fx = Cycle(p, 70, function(dir)
+            if not h.look then return end
+            h.look.fx = Step(OSA.LOOK_FXS, h.look.fx, dir)
+            OSA.Changed()
+        end)
+        Tooltip(h.fx, "Effect", "Dim: a dark shade over the icon.\nGlow: the action bar's gold glow.\nGrey: the "
+            .. "icon without colour.\nRed, Green, Blue: the icon tinted that colour." .. CYCLE_HINT)
+        h.when = Label(p, "when:", "GameFontHighlightSmall")
+        h.when:SetPoint("LEFT", h.fx, "RIGHT", 6, 0)
+        h.add = Button(p, "+ Condition", 96, function()
+            local a = alert()
+            if not (a and h.look) or #h.look.conds >= MAX_CONDS or Total(a) >= MAX_TOTAL then return end
+            table.insert(h.look.conds, { what = "cp", op = ">=", n = 5, join = "and" })
+            OSA.Changed()
+        end)
+        h.add:SetPoint("LEFT", h.when, "RIGHT", 8, 0)
+        Tooltip(h.add, "Add a condition", ("Add a condition to this look, up to %d."):format(MAX_CONDS))
+        h.remove = CreateFrame("Button", nil, p, "UIPanelCloseButton")
+        h.remove:SetSize(22, 22)
+        h.remove:SetPoint("LEFT", h.add, "RIGHT", 2, 0)
+        h.remove:SetScript("OnClick", function()
+            local a = alert()
+            if not (a and a.looks and h.look) then return end
+            for k, look in ipairs(a.looks) do
+                if look == h.look then table.remove(a.looks, k) break end
+            end
+            if #a.looks == 0 then a.looks = nil end
+            OSA.Changed()
+        end)
+        Tooltip(h.remove, "Remove", "Remove this look and its conditions.")
+        h.all = { h.fx, h.when, h.add, h.remove }
+        heads[i] = h
+        return h
+    end
+    local function Row(i)
+        if rows[i] then return rows[i] end
+        local r = {}
+        local function Change(key, list)
+            return function(dir)
+                if not r.cond then return end
+                r.cond[key] = Step(list, r.cond[key], dir)
+                OSA.Changed()
+            end
+        end
+        r.join = Cycle(p, 40, Change("join", { "and", "or" }))
+        Tooltip(r.join, "And / or", "And: this and the condition above must both hold.\nOr: either side "
+            .. "may hold. \"and\" goes first, so a and b or c and d is (a and b) or (c and d)." .. CYCLE_HINT)
+        r.what = Cycle(p, 104, Change("what", OSA.LOOK_WHATS))
+        r.what:SetPoint("LEFT", r.join, "RIGHT", 2, 0)
+        Tooltip(r.what, "What it watches", "Your energy (or rage or mana, whichever you have), your target's "
+            .. "health in percent, or your combo points." .. CYCLE_HINT)
+        r.op = Cycle(p, 40, Change("op", OSA.LOOK_OPS))
+        r.op:SetPoint("LEFT", r.what, "RIGHT", 2, 0)
+        Tooltip(r.op, "Compare", "Less than, at most, equal to, at least, or more than the number. Energy "
+            .. "and combo points are whole numbers, so < 30 means 29 or less. Target health = 30 means "
+            .. "29.5% to 30.5%." .. CYCLE_HINT)
+        r.n = NumberBox(p, 40, function()
+            return r.cond and r.cond.n
+        end, function(n)
+            if r.cond then r.cond.n = n end
+        end)
+        r.n:SetMaxLetters(5)
+        r.n:SetPoint("LEFT", r.op, "RIGHT", 8, 0)
+        r.remove = CreateFrame("Button", nil, p, "UIPanelCloseButton")
+        r.remove:SetSize(22, 22)
+        r.remove:SetPoint("LEFT", r.n, "RIGHT", 2, 0)
+        r.remove:SetScript("OnClick", function()
+            local a = alert()
+            if not (a and a.looks and r.look and r.cond) then return end
+            for k, c in ipairs(r.look.conds) do
+                if c == r.cond then table.remove(r.look.conds, k) break end
+            end
+            -- a look with no conditions goes too
+            if #r.look.conds == 0 then
+                for k, look in ipairs(a.looks) do
+                    if look == r.look then table.remove(a.looks, k) break end
+                end
+                if #a.looks == 0 then a.looks = nil end
+            end
+            OSA.Changed()
+        end)
+        Tooltip(r.remove, "Remove", "Remove this condition.")
+        r.all = { r.join, r.what, r.op, r.n, r.remove }
+        rows[i] = r
+        return r
+    end
+
+    local add = Button(p, "Add a look", 100, function()
+        local a = alert()
+        if not a then return end
+        a.looks = a.looks or {}
+        if #a.looks >= MAX or Total(a) >= MAX_TOTAL then return end
+        -- a start that reads sensibly, then change it
+        table.insert(a.looks, { fx = "dim", conds = { { what = "power", op = ">", n = 80, join = "and" } } })
+        OSA.Changed()
+    end)
+    local note = Label(p, "In combat the game hides your energy and the target's health from addons, and checks "
+        .. "them itself. Then energy \"and\" target health can't be checked together, and an \"or\" can draw "
+        .. "the effect twice, so a glow is brighter or a dim darker.", "GameFontDisableSmall")
+    note:SetPoint("BOTTOMLEFT", 12, 10)
+    note:SetPoint("RIGHT", p, "RIGHT", -12, 0)
+    note:SetWordWrap(true)
+
+    function p:Refresh()
+        local a = alert()
+        if not a then self:Hide() return end
+        self.title:SetText("Look of " .. a.spell)
+        local looks = a.looks or {}
+        local total = Total(a)
+        local y, nh, nr = -TOP, 0, 0
+        for _, look in ipairs(looks) do
+            nh = nh + 1
+            local h = Head(nh)
+            h.look = look
+            h.fx:ClearAllPoints()
+            h.fx:SetPoint("TOPLEFT", 10, y)
+            h.fx:SetText(OSA.LOOK_FX_NAMES[look.fx])
+            h.add:SetEnabled(#look.conds < MAX_CONDS and total < MAX_TOTAL)
+            for _, w in ipairs(h.all) do w:Show() end
+            y = y - LINE
+            for k, c in ipairs(look.conds) do
+                nr = nr + 1
+                local r = Row(nr)
+                r.look, r.cond = look, c
+                r.join:ClearAllPoints()
+                r.join:SetPoint("TOPLEFT", 26, y)
+                r.join:SetText(c.join or "and")
+                for _, w in ipairs(r.all) do w:Show() end
+                -- the first condition has nothing above it to join to
+                r.join:SetShown(k > 1)
+                r.what:SetText(OSA.LOOK_WHAT_NAMES[c.what])
+                r.op:SetText(c.op)
+                ShowNumber(r.n)
+                y = y - LINE
+            end
+        end
+        for i = nh + 1, #heads do
+            heads[i].look = nil
+            for _, w in ipairs(heads[i].all) do w:Hide() end
+        end
+        for i = nr + 1, #rows do
+            rows[i].look, rows[i].cond = nil, nil
+            for _, w in ipairs(rows[i].all) do w:Hide() end
+        end
+        add:ClearAllPoints()
+        add:SetPoint("TOPLEFT", 10, y - 4)
+        add:SetEnabled(#looks < MAX and total < MAX_TOTAL)
+        -- room for the Add a look button, then the note under it, however many lines it wraps to
+        local noteHeight = math.max(note:GetStringHeight() or 0, 40)
+        self:SetHeight(TOP + (nh + nr) * LINE + 4 + 22 + 12 + noteHeight + 10)
+    end
+
+    function p:Open()
+        self:ClearAllPoints()
+        self:SetPoint("TOPLEFT", parent, "TOPRIGHT", 2, 0)
+        self:Show()
+        self:Refresh()
+    end
+
+    return p
+end
+
 -- your spells that can be cast, one row per name, sorted
 local function SpellRows(onPick)
     local byName, rows = {}, {}
@@ -331,6 +529,7 @@ end
 local function Summary(a)
     local early = (a.early and (", %d sec early"):format(a.early) or "")
         .. (a.flash and (", shown %d sec"):format(a.flash) or "")
+        .. (a.looks and (", %d look%s"):format(#a.looks, #a.looks > 1 and "s" or "") or "")
     local at = (a.atPower and (", %d+ energy"):format(a.atPower) or "") .. early
     if a.kind == "combo" then
         return ("at %d combo points"):format(a.cp or 0) .. (a.anytime and ", no target needed" or "") .. at
@@ -393,6 +592,7 @@ local function CreateConfig()
     local picker = Picker(f, "Add a spell", 260, 380)
     local addSpell = Button(f, "Add spell...", 120, function()
         if picker:IsShown() then picker:Hide() return end
+        if f.looks then f.looks:Hide() end
         picker:Open(function()
             return SpellRows(function(name)
                 Add(name)
@@ -786,7 +986,29 @@ local function CreateConfig()
         .. "frame with rounded corners, a thick black edge, or none.\n\nClick for the next one, right-click for "
         .. "the one before.")
 
-    local editWidgets = { borderLabel, border, plate, plateSide, iconBy, iconHeight, icon, name, on, whenLabel, when, cpLabel, cp, cpHint, condTitle, condHint, soundLabel, sound,
+    -- rules that change the icon's look with your energy, the target's health or combo points
+    local looks = LooksPanel(f, Selected)
+    f.looks = looks
+    local lookButton = Button(edit, "Look...", 90, function()
+        if looks:IsShown() then looks:Hide() return end
+        picker:Hide()
+        looks:Open()
+    end)
+    lookButton:SetPoint("LEFT", border, "RIGHT", 12, 0)
+    Tooltip(lookButton, "Look", function()
+        local a = Selected()
+        local text = "Dim the icon, make it glow, grey it or tint it while your energy, the target's health or "
+            .. "your combo points compare to numbers, joined by and/or. Not on an alert that needs a debuff "
+            .. "while the game's aura button draws it in combat."
+        if a and a.looks then
+            local parts = {}
+            for _, look in ipairs(a.looks) do table.insert(parts, OSA.DescribeLook(look)) end
+            text = text .. "\n\n" .. table.concat(parts, "\n")
+        end
+        return text
+    end)
+
+    local editWidgets = { lookButton, borderLabel, border,plate, plateSide, iconBy, iconHeight, icon, name, on, whenLabel, when, cpLabel, cp, cpHint, condTitle, condHint, soundLabel, sound,
         play, flashLabel, flashBox, flashHint, earlyLabel, earlyBox, earlyHint, up, down, iconSizeLabel, iconSize,
         iconSizeHint }
     -- shown only for alerts that need the spell castable
@@ -896,6 +1118,9 @@ local function CreateConfig()
         end
         anytime:SetShown(castable)
         anyone:SetShown(a ~= nil and a.kind == "aura")
+        -- an on-the-target alert's icon is the game's aura button, which the rules can't draw on
+        lookButton:SetShown(a ~= nil and a.kind ~= "aura")
+        if a and a.kind == "aura" then looks:Hide() end
         for _, w in ipairs(powerWidgets) do w:SetShown(castable) end
         -- an aura alert has no cooldown or length to show early by
         if a and a.kind == "aura" then
@@ -928,6 +1153,7 @@ local function CreateConfig()
             plateSide:SetText(({ top = "Above", left = "Left", right = "Right" })[OSA.PlateSideOf(a)])
             plateSide:SetEnabled(OSA.OnPlate(a) and true or false)
             border:SetText(OSA.BORDER_NAMES[a.border or "thin"])
+            lookButton:SetText(a.looks and ("Look (%d)..."):format(#a.looks) or "Look...")
             ShowNumber(iconHeight)
             iconSizeHint:SetText("0 = " .. (db.size > 0 and db.size or OSA.SIZE))
             local auto = a.kind == "debuff" and AutoDuration(a)
@@ -941,6 +1167,7 @@ local function CreateConfig()
         minimap:SetChecked(not db.minimap.hide)
         debug:SetChecked(db.debug and true or false)
         whole:SetChecked(db.wholeSeconds and true or false)
+        if looks:IsShown() then looks:Refresh() end
     end
 
     f:SetScript("OnShow", function(self) self:Refresh() end)
@@ -958,14 +1185,28 @@ end
 
 -- addon compartment (the addons button by the minimap) -------------------------------------------
 
+-- Shift-click unlocks or locks the icons, as in Buff Reminder
+function OSA.ToggleLocked()
+    local db = OSA.DB()
+    db.unlocked = not db.unlocked or nil
+    OSA.Print(db.unlocked and "Icons unlocked. Drag an icon to move its set, Shift-drag to pull it out on its own."
+        or "Icons locked.")
+    OSA.Changed()
+end
+
 function OpcowsSpellAlerts_OnAddonCompartmentClick()
-    OSA.ToggleConfig()
+    if IsShiftKeyDown() then
+        OSA.ToggleLocked()
+    else
+        OSA.ToggleConfig()
+    end
 end
 
 function OpcowsSpellAlerts_OnAddonCompartmentEnter(_, button)
     GameTooltip:SetOwner(button, "ANCHOR_LEFT")
     GameTooltip:SetText("Opcow's Spell Alerts")
     GameTooltip:AddLine("Click: options", 1, 1, 1)
+    GameTooltip:AddLine(OSA.DB().unlocked and "Shift-click: lock the icons" or "Shift-click: unlock the icons", 1, 1, 1)
     GameTooltip:AddLine(#OSA.DB().alerts .. " alerts", 0.5, 0.5, 0.5)
     GameTooltip:Show()
 end
@@ -1014,7 +1255,7 @@ local function CreateMinimapButton()
     border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
     border:SetPoint("TOPLEFT")
 
-    b:SetScript("OnClick", function() OSA.ToggleConfig() end)
+    b:SetScript("OnClick", function() OpcowsSpellAlerts_OnAddonCompartmentClick() end)
     b:SetScript("OnEnter", function(self) OpcowsSpellAlerts_OnAddonCompartmentEnter(nil, self) end)
     b:SetScript("OnLeave", OpcowsSpellAlerts_OnAddonCompartmentLeave)
     b:SetScript("OnDragStart", function(self)

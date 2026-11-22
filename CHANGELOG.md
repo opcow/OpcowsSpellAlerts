@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.20.0
+
+### Added
+
+- Shift-click the minimap button or the addon compartment entry to unlock or lock the icons, as in Opcow's Buff Reminder.
+- **Look...** in an alert's settings: looks that change its icon while your energy (or rage or mana), the target's health or your combo points compare to numbers with <, <=, =, >= or >. Each look dims the icon, makes it glow with the action bar's gold glow, greys it, or tints it red, green or blue, while its conditions hold. Conditions are joined by "and" or "or", "and" going first, ex: Slice and Dice glowing at 5 combo points and target health >= 10%, or Shank dimmed above 80 energy. In combat, when the game hides your energy and the target's health from addons, the checks are handed to the game to apply. Also `/osa look <n> add glow cp = 5 and health >= 10`, `/osa look <n> remove <look>` and `/osa look <n> clear`.
+
 ## 0.19.0
 
 ### Changed

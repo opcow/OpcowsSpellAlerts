@@ -53,6 +53,20 @@ local TotemDefault
 local issecretvalue = issecretvalue or function() return false end
 
 -- an alert's conditions, filled in with the defaults where missing or invalid
+-- an alert's looks: { fx, conds = { { what, op "<" "<=" "=" ">=" ">", n, join "and"|"or" } } }.
+-- Your power is in points (energy, rage, mana), the target's health in percent. The first
+-- condition's join is ignored.
+local LOOK_WHAT = { power = true, health = true, cp = true }
+local LOOK_OP = { ["<"] = true, ["<="] = true, ["="] = true, [">="] = true, [">"] = true }
+OSA.LOOK_OPS = { "<", "<=", "=", ">=", ">" }
+local LOOK_FX = { dim = true, glow = true, grey = true, red = true, green = true, blue = true }
+OSA.LOOK_WHATS = { "power", "health", "cp" }
+OSA.LOOK_FXS = { "dim", "glow", "grey", "red", "green", "blue" }
+OSA.LOOK_WHAT_NAMES = { power = "My energy", health = "Target health", cp = "Combo points" }
+OSA.LOOK_FX_NAMES = { dim = "Dim", glow = "Glow", grey = "Grey", red = "Red", green = "Green", blue = "Blue" }
+OSA.MAX_LOOKS = 6
+OSA.MAX_CONDS = 5
+
 local function Conds(a)
     if type(a.conds) ~= "table" then a.conds = {} end
     for _, k in ipairs(CONDITIONS) do
@@ -113,6 +127,35 @@ local function DB()
             if #a.need == 0 then a.need = nil end
         else
             a.need = nil
+        end
+        -- how the icon looks while your power, the target's health or combo points are in a range
+        if type(a.looks) == "table" then
+            for i = #a.looks, 1, -1 do
+                local look = a.looks[i]
+                -- before and/or, a look had one condition: { what, op, n, fx }
+                if type(look) == "table" and look.conds == nil and look.what ~= nil then
+                    look = { fx = look.fx, conds = { { what = look.what, op = look.op, n = look.n } } }
+                    a.looks[i] = look
+                end
+                if type(look) == "table" and type(look.conds) == "table" then
+                    for j = #look.conds, 1, -1 do
+                        local c = look.conds[j]
+                        if type(c) ~= "table" or not LOOK_WHAT[c.what] or not LOOK_OP[c.op]
+                            or type(c.n) ~= "number" then
+                            table.remove(look.conds, j)
+                        elseif c.join ~= "or" then
+                            c.join = "and"
+                        end
+                    end
+                end
+                if type(look) ~= "table" or not LOOK_FX[look.fx] or type(look.conds) ~= "table"
+                    or #look.conds == 0 then
+                    table.remove(a.looks, i)
+                end
+            end
+            if #a.looks == 0 then a.looks = nil end
+        else
+            a.looks = nil
         end
     end
     -- spell ids by name for aura alerts, looked up once per game build: { build, names = { [lower
@@ -1810,6 +1853,332 @@ local function StyleBorder(s, style)
     end
 end
 
+-- looks ------------------------------------------------------------------------------------------
+-- A look draws a layer over the icon while its conditions hold: a dark shade, a grey or coloured
+-- copy of the icon, or the gold proc glow. Conditions are joined by "and" and "or", "and" binding
+-- tighter. In combat the game hides your power and the target's health, so the addon can't compare
+-- them itself. Instead it gives the game a curve (below 30% -> 1, from 30% on -> 0), the game looks
+-- the value up and hands back the answer, secret, and that goes straight to the layer's alpha. What
+-- can be read (combo points, and anything out of combat) is settled by the addon first; what's left
+-- becomes one or more layers, so an "or" of hidden things can draw the effect twice.
+
+local TINTS = { red = { 1, 0.25, 0.25 }, green = { 0.3, 1, 0.3 }, blue = { 0.35, 0.55, 1 } }
+local curves = {}
+-- your highest power, kept from when it could be read, to turn points into the curve's 0 to 1
+local powerMax = {}
+
+-- a step curve over 0 to 1 that's 1 inside any of segs, { {lo, hi}, ... } (lo included, hi not),
+-- and 0 elsewhere
+local function SegCurve(segs)
+    local parts, cuts = {}, {}
+    for _, s in ipairs(segs) do
+        table.insert(parts, s[1] .. ":" .. s[2])
+        for _, x in ipairs(s) do
+            if x > 0 and x < 1 then table.insert(cuts, x) end
+        end
+    end
+    local key = table.concat(parts, ",")
+    if curves[key] ~= nil then return curves[key] or nil end
+    table.sort(cuts)
+    local ok, c = pcall(function()
+        local c = C_CurveUtil.CreateCurve()
+        c:SetType(Enum.LuaCurveType.Step)
+        local function At(x)
+            for _, s in ipairs(segs) do
+                if x >= s[1] and x < s[2] then return 1 end
+            end
+            return 0
+        end
+        c:AddPoint(0, At(0))
+        local last = 0
+        for _, x in ipairs(cuts) do
+            if x > last then c:AddPoint(x, At(x)) last = x end
+        end
+        c:AddPoint(1, At(1))
+        return c
+    end)
+    curves[key] = ok and c or false
+    return ok and c or nil
+end
+
+local function CanCurve()
+    return C_CurveUtil and C_CurveUtil.CreateCurve and Enum and Enum.LuaCurveType and true or false
+end
+
+local HUGE = math.huge
+-- where the rule holds, from lo up to, not including, hi. Power and combo points are whole, so
+-- "< 30" is 29 or less and "= 30" is 30. Health is a percent with fractions: "< 30" is under 30%,
+-- "<= 30" is 30% or less, and "= 30" rounds, 29.5% up to 30.5%.
+local function Range(r)
+    local n = r.n
+    if r.what == "health" then
+        local e = 0.001
+        if r.op == "<" then return -HUGE, n end
+        if r.op == "<=" then return -HUGE, n + e end
+        if r.op == "=" then return n - 0.5, n + 0.5 end
+        if r.op == ">=" then return n, HUGE end
+        return n + e, HUGE
+    end
+    if r.op == "<" then return -HUGE, n - 0.5 end
+    if r.op == "<=" then return -HUGE, n + 0.5 end
+    if r.op == "=" then return n - 0.5, n + 0.5 end
+    if r.op == ">=" then return n - 0.5, HUGE end
+    return n + 0.5, HUGE
+end
+
+-- what can be read right now: combo points, your power and the target's health, each nil when hidden
+local function Readings()
+    local okT, pType = pcall(UnitPowerType, "player")
+    pType = okT and Num(pType) or 0
+    local okP, p = pcall(UnitPower, "player", pType)
+    local okM, m = pcall(UnitPowerMax, "player", pType)
+    m = okM and Num(m)
+    if m and m > 0 then powerMax[pType] = m end
+    local target = Bool(UnitExists("target")) and true or false
+    local health
+    if target then
+        local okH, h = pcall(UnitHealth, "target")
+        local okHM, hm = pcall(UnitHealthMax, "target")
+        h, hm = okH and Num(h), okHM and Num(hm)
+        if h and hm and hm > 0 then health = h * 100 / hm end
+    end
+    return { cp = Num(ComboPoints()), power = okP and Num(p) or nil, pType = pType,
+        max = powerMax[pType] or 100, target = target, health = health }
+end
+
+-- a look's conditions split at each "or": { { cond, cond }, { cond } }. "and" binds tighter.
+local function Terms(look)
+    local terms, term = {}, nil
+    for i, c in ipairs(look.conds) do
+        if i == 1 or c.join == "or" then
+            term = {}
+            table.insert(terms, term)
+        end
+        table.insert(term, c)
+    end
+    return terms
+end
+
+-- What the game has to draw for a look. Each draw is a layer: { p = power segments, h = health
+-- segments } as fractions, either or both left for the game to check because they're hidden, or
+-- neither for a layer that's simply on. Returns {} when the look is off. Everything readable is
+-- settled here; the hidden parts of terms that check only power (or only health) merge into one
+-- draw, so "energy < 30 or energy > 80" is one layer.
+function OSA.LookDraws(look, rd)
+    rd = rd or Readings()
+    local powerOnly, healthOnly, mixed = {}, {}, {}
+    local function Frac(x, max)
+        if x == -HUGE then return -1 end
+        if x == HUGE then return 2 end
+        return x / max
+    end
+    for _, term in ipairs(Terms(look)) do
+        -- each kind of value must be in all of its ranges
+        local rng = {}
+        for _, c in ipairs(term) do
+            local lo, hi = Range(c)
+            local r = rng[c.what]
+            if r then
+                r[1], r[2] = math.max(r[1], lo), math.min(r[2], hi)
+            else
+                rng[c.what] = { lo, hi }
+            end
+        end
+        local holds, p, h = true, nil, nil
+        for what, r in pairs(rng) do
+            if r[1] >= r[2] then
+                holds = false
+            elseif what == "cp" then
+                -- combo points can be read; unknown counts as not met
+                if not (rd.cp and rd.cp >= r[1] and rd.cp < r[2]) then holds = false end
+            elseif what == "health" then
+                if not rd.target then
+                    holds = false
+                elseif rd.health then
+                    if not (rd.health >= r[1] and rd.health < r[2]) then holds = false end
+                else
+                    h = { Frac(r[1], 100), Frac(r[2], 100) }
+                end
+            elseif rd.power then
+                if not (rd.power >= r[1] and rd.power < r[2]) then holds = false end
+            else
+                p = { Frac(r[1], rd.max), Frac(r[2], rd.max) }
+            end
+        end
+        if holds then
+            if not p and not h then return { {} } end
+            if p and h then
+                table.insert(mixed, { p = { p }, h = { h } })
+            elseif p then
+                table.insert(powerOnly, p)
+            else
+                table.insert(healthOnly, h)
+            end
+        end
+    end
+    local draws = {}
+    if #powerOnly > 0 then table.insert(draws, { p = powerOnly }) end
+    if #healthOnly > 0 then table.insert(draws, { h = healthOnly }) end
+    for _, d in ipairs(mixed) do table.insert(draws, d) end
+    for _, d in ipairs(draws) do d.pType = rd.pType end
+    return draws
+end
+
+-- the game's answers for a draw: true, power's (1, 0 or secret, nil if not asked), health's; false
+-- when it can't be asked
+function OSA.DrawValues(d)
+    local pv, hv
+    if d.p then
+        local curve = UnitPowerPercent and CanCurve() and SegCurve(d.p)
+        if not curve then return false end
+        local ok, v = pcall(UnitPowerPercent, "player", d.pType, false, curve)
+        if not ok then return false end
+        pv = v
+    end
+    if d.h then
+        local curve = UnitHealthPercent and CanCurve() and SegCurve(d.h)
+        if not curve then return false end
+        local ok, v = pcall(UnitHealthPercent, "target", true, curve)
+        if not ok then return false end
+        hv = v
+    end
+    return true, pv, hv
+end
+
+-- a new layer of this effect on the icon f
+local function MakeLook(f, fx)
+    local t
+    if fx == "glow" then
+        if HasAtlas("UI-HUD-ActionBar-Proc-Loop-Flipbook") then
+            t = f:CreateTexture(nil, "OVERLAY", nil, 3)
+            t:SetAtlas("UI-HUD-ActionBar-Proc-Loop-Flipbook")
+            -- the action bar draws it 1.4 times the button
+            t.out = 0.2
+            pcall(function()
+                local spin = t:CreateAnimationGroup()
+                spin:SetLooping("REPEAT")
+                local fb = spin:CreateAnimation("FlipBook")
+                fb:SetDuration(1)
+                fb:SetFlipBookRows(6)
+                fb:SetFlipBookColumns(5)
+                fb:SetFlipBookFrames(30)
+                fb:SetFlipBookFrameWidth(0)
+                fb:SetFlipBookFrameHeight(0)
+                spin:Play()
+            end)
+        else
+            -- the older look: a soft gold glow past the edges
+            t = f:CreateTexture(nil, "OVERLAY", nil, 3)
+            t:SetTexture("Interface\\SpellActivationOverlay\\IconAlert")
+            t:SetTexCoord(0.0078125, 0.5078125, 0.27734375, 0.52734375)
+            t.out = 0.25
+        end
+    else
+        -- the shade over the tints, so a dimmed red icon is dark red
+        t = f:CreateTexture(nil, "ARTWORK", nil, fx == "dim" and 2 or 1)
+        t:SetAllPoints(f.tex)
+        if fx == "dim" then
+            t:SetColorTexture(0, 0, 0, 0.6)
+        else
+            -- a copy of the icon, grey or tinted, over it. It's opaque, so two of them on top of
+            -- each other look like one.
+            t.copy = true
+            t:SetDesaturated(true)
+        end
+        -- the action bar border's rounded corners take it too
+        table.insert(f.border.masked, t)
+        if f.border.isMasked and f.border.mask then t:AddMaskTexture(f.border.mask) end
+    end
+    t.fx = fx
+    return t
+end
+
+-- sets layer t's colour and alpha from the draw's answer. A texture's alpha is its colour's alpha,
+-- so the colour goes first. Only one hidden answer fits on a layer: a draw needing both your power
+-- and the target's health hidden can't be shown, and stays off.
+local function SetLookAlpha(t, d)
+    local c = TINTS[t.fx] or { 1, 1, 1 }
+    t:SetVertexColor(c[1], c[2], c[3], 1)
+    local ok, pv, hv = OSA.DrawValues(d)
+    if ok and d.p and d.h then ok = false end
+    local alpha = 1
+    if d.p then alpha = pv elseif d.h then alpha = hv end
+    if ok then ok = pcall(t.SetAlpha, t, alpha) end
+    if not ok then t:SetAlpha(0) end
+end
+
+-- draws the alert's looks on the icon f, or none (off is true while previewing)
+local function ApplyLooks(f, a, off)
+    f.looks = f.looks or {}
+    local used = {}
+    if not off and a.looks then
+        local rd = Readings()
+        for _, look in ipairs(a.looks) do
+            local fx = look.fx
+            for _, d in ipairs(OSA.LookDraws(look, rd)) do
+                used[fx] = (used[fx] or 0) + 1
+                local list = f.looks[fx] or {}
+                f.looks[fx] = list
+                local t = list[used[fx]]
+                if not t then
+                    t = MakeLook(f, fx)
+                    list[used[fx]] = t
+                end
+                if t.copy then
+                    t:SetTexture(f.tex:GetTexture())
+                    t:SetTexCoord(f.tex:GetTexCoord())
+                end
+                if t.out then
+                    local w, h = f:GetSize()
+                    local ox, oy = math.floor(w * t.out + 0.5), math.floor(h * t.out + 0.5)
+                    t:ClearAllPoints()
+                    t:SetPoint("TOPLEFT", f, "TOPLEFT", -ox, oy)
+                    t:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", ox, -oy)
+                end
+                t:Show()
+                SetLookAlpha(t, d)
+            end
+        end
+    end
+    for fx, list in pairs(f.looks) do
+        for i = (used[fx] or 0) + 1, #list do list[i]:Hide() end
+    end
+end
+
+-- what a condition says, ex: "My energy > 80"
+function OSA.DescribeCond(c)
+    local n = c.what == "health" and (c.n .. "%") or tostring(c.n)
+    return ("%s %s %s"):format(OSA.LOOK_WHAT_NAMES[c.what], c.op, n)
+end
+
+-- what a look says, ex: "Glow: Combo points = 5 and Target health >= 10%"
+function OSA.DescribeLook(look)
+    local parts = {}
+    for i, c in ipairs(look.conds) do
+        table.insert(parts, (i > 1 and ((c.join or "and") .. " ") or "") .. OSA.DescribeCond(c))
+    end
+    return OSA.LOOK_FX_NAMES[look.fx] .. ": " .. table.concat(parts, " ")
+end
+
+-- what the probe says about a look: on, off, or what's left for the game to check
+function OSA.ProbeLook(look)
+    local draws = OSA.LookDraws(look)
+    if #draws == 0 then return "off" end
+    local parts = {}
+    for _, d in ipairs(draws) do
+        if not d.p and not d.h then return "on" end
+        local ok, pv, hv = OSA.DrawValues(d)
+        if d.p and d.h then
+            table.insert(parts, "energy and health both hidden, not drawn")
+        elseif not ok then
+            table.insert(parts, "can't ask the game")
+        else
+            table.insert(parts, d.p and ("energy " .. Show(pv)) or ("health " .. Show(hv)))
+        end
+    end
+    return table.concat(parts, ", or ")
+end
+
 local function MakeIcon(i)
     local f = CreateFrame("Frame", nil, holder)
     f.tex = f:CreateTexture(nil, "ARTWORK")
@@ -2175,6 +2544,7 @@ function OSA.Update()
             f.flash = flash and { at = flash, len = a.flash, alpha = alpha } or nil
             f:SetAlpha(flash and alpha * FlashAlpha(a.flash, now - flash) or alpha)
             f.tex:SetDesaturated(dim and true or false)
+            ApplyLooks(f, a, preview)
             if on == nil and secret ~= nil then
                 -- only the game knows: let it set the alpha, and play no sound
                 if not (f.SetAlphaFromBoolean and pcall(f.SetAlphaFromBoolean, f, secret, 1, 0)) then f:SetAlpha(1) end
@@ -2427,9 +2797,9 @@ function OSA.Probe(name)
     local cpOk, cp = pcall(GetComboPoints or function() return "missing" end, "player", "target")
     local powerType = Enum and Enum.PowerType and Enum.PowerType.ComboPoints
     local pw = powerType and select(2, pcall(UnitPower, "player", powerType)) or "missing"
-    Print(("probe, %s: combo points %s, power %s, your energy/rage/mana %s, target %s, attackable %s, guid %s"):format(
+    Print(("probe, %s: combo points %s, power %s, your energy/rage/mana %s, target health %s, target %s, attackable %s, guid %s"):format(
         InCombatLockdown() and "in combat" or "out of combat", cpOk and Show(cp) or "error", Show(pw),
-        Show(select(2, pcall(UnitPower, "player"))),
+        Show(select(2, pcall(UnitPower, "player"))), Show(select(2, pcall(UnitHealth, "target"))),
         Show(UnitName("target")), tostring(Attackable()), Show(select(2, pcall(UnitGUID, "target")))))
     for _, ev in ipairs(PROBED_EVENTS) do
         local s = seen[ev]
@@ -2451,6 +2821,12 @@ function OSA.Probe(name)
         for _, a in ipairs(DB().alerts) do
             if a.kind == "aura" then ProbeAura(a) else ProbeSpell(a.spell) end
             if a.kind ~= "aura" and AuraNames(a) then ProbeAura(a) end
+        end
+        -- what each look gives: on, off, or secret when only the game knows
+        for _, a in ipairs(DB().alerts) do
+            for _, look in ipairs(a.looks or {}) do
+                Print(("  %s look, %s: %s"):format(a.spell, OSA.DescribeLook(look), OSA.ProbeLook(look)))
+            end
         end
         if #DB().alerts == 0 then Print("  /osa probe <spell> to probe a spell.") end
     end
@@ -2488,6 +2864,11 @@ local function Describe(i, a)
         text = text .. ", short of energy: " .. (a.power or "dim")
     end
     if a.flash then text = text .. ", fades out after " .. a.flash .. " sec" end
+    if a.looks then
+        local parts = {}
+        for _, look in ipairs(a.looks) do table.insert(parts, OSA.DescribeLook(look)) end
+        text = text .. ", looks: " .. table.concat(parts, "; ")
+    end
     if a.size then text = text .. ", icon size " .. a.size end
     if a.height then text = text .. ", icon height " .. a.height end
     if a.border then text = text .. ", border " .. OSA.BORDER_NAMES[a.border]:lower() end
@@ -2524,6 +2905,11 @@ local HELP = {
     "/osa early <n> <sec|off> - show alert n with a countdown this many seconds before its cooldown ends, "
         .. "or before its debuff falls off",
     "/osa flash <n> <sec|off> - show alert n for only this many seconds when it comes on, fading in and out",
+    "/osa look <n> add <dim|glow|grey|red|green|blue> <energy|health|cp> <<|<=|=|>=|>> <number> "
+        .. "[and|or ...] - change alert n's look while your energy (rage, mana), the target's health % or "
+        .. "combo points compare to numbers. \"and\" binds tighter than \"or\", ex: "
+        .. "/osa look 1 add glow cp = 5 and health >= 10",
+    "/osa look <n> remove <look>|clear - remove one of alert n's looks, or all of them",
     "/osa anytime <n> on|off - no target needed: a usable alert shows out of combat with no target, ex: "
         .. "Sprint, a combo point alert without an enemy target. The target, enemy and friendly conditions "
         .. "can still ask for one",
@@ -2679,6 +3065,61 @@ SlashCmdList.OPCOWSSPELLALERTS = function(msg)
             return
         end
         a.flash = sec > 0 and math.max(1, sec) or nil
+        Print(Describe(tonumber(n), a))
+    elseif cmd == "look" then
+        local n, args = rest:match("^(%d+)%s+(.+)$")
+        local a = Alert(n)
+        local words = {}
+        for w in (args or ""):lower():gmatch("%S+") do table.insert(words, w) end
+        local whats = { energy = "power", power = "power", rage = "power", mana = "power", health = "health", cp = "cp",
+            combo = "cp" }
+        local ops = { above = ">", below = "<", at = "=", ["=="] = "=", ["=>"] = ">=", ["=<"] = "<=" }
+        for _, op in ipairs(OSA.LOOK_OPS) do ops[op] = op end
+        local fxs = { gray = "grey" }
+        for _, fx in ipairs(OSA.LOOK_FXS) do fxs[fx] = fx end
+        -- add <fx> <what> <op> <n> [and|or <what> <op> <n>]...
+        local look
+        if words[1] == "add" and fxs[words[2]] then
+            look = { fx = fxs[words[2]], conds = {} }
+            local i = 3
+            while look do
+                local join = "and"
+                if #look.conds > 0 then
+                    join = words[i]
+                    i = i + 1
+                end
+                local what, op, num = whats[words[i] or ""], ops[words[i + 1] or ""], tonumber(words[i + 2] or "")
+                if (join == "and" or join == "or") and what and op and num then
+                    table.insert(look.conds, { what = what, op = op, n = num, join = join })
+                    i = i + 3
+                    if not words[i] then break end
+                else
+                    look = nil
+                end
+            end
+        end
+        if a and look then
+            a.looks = a.looks or {}
+            if #a.looks >= OSA.MAX_LOOKS then
+                Print(("an alert can have up to %d looks."):format(OSA.MAX_LOOKS))
+                return
+            end
+            if #look.conds > OSA.MAX_CONDS then
+                Print(("a look can have up to %d conditions."):format(OSA.MAX_CONDS))
+                return
+            end
+            table.insert(a.looks, look)
+        elseif a and words[1] == "clear" then
+            a.looks = nil
+        elseif a and words[1] == "remove" and a.looks and a.looks[tonumber(words[2]) or 0] then
+            table.remove(a.looks, tonumber(words[2]))
+            if #a.looks == 0 then a.looks = nil end
+        else
+            Print("/osa look <n> add <dim|glow|grey|red|green|blue> <energy|health|cp> <<|<=|=|>=|>> <number> "
+                .. "[and|or <energy|health|cp> <op> <number>]..., or /osa look <n> remove <look> or clear. "
+                .. "n is the alert's number in /osa list.")
+            return
+        end
         Print(Describe(tonumber(n), a))
     elseif cmd == "anytime" then
         local n, value = rest:match("^(%d+)%s+(%a+)$")
