@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.21.0
+
+### Changed
+
+- The Fire, Earth, Water and Air totem checks under "Hide the icon while" are replaced by **Only while my totem is down**: pick the totems from your spellbook, ex: Flametongue Totem for Fire Nova, and the icon shows only while one of them is down. A spell whose tooltip names one of your totems gets it picked for you. In combat, when the game hides which totem is down, the totem you cast is paired with the slot that changed. Also `/osa totem <n> <totem, totem...|off>`. `/osa probe` prints each totem slot.
+
+### Fixed
+
+- The "click to cycle" hint beside "Hide the icon while" ran past the window's edge.
+
 ## 0.20.0
 
 ### Added

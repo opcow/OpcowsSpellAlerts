@@ -14,15 +14,12 @@ local COND_LABELS = {
     dead = "Dead", instance = "Instance", party = "Party", raid = "Raid",
     resting = "Resting", taxi = "Taxi", combat = "Combat", mounted = "Mounted",
     target = "Target", enemy = "Enemy", friendly = "Friendly",
-    fireTotem = "Fire totem", earthTotem = "Earth totem", waterTotem = "Water totem", airTotem = "Air totem",
 }
 local COND_DESC = {
     dead = "dead", instance = "in a dungeon", party = "in a party", raid = "in a raid",
     resting = "resting", taxi = "on a flight path", combat = "in combat", mounted = "mounted",
     target = "you have a target", enemy = "your target is a living enemy you can attack",
     friendly = "your target is friendly",
-    fireTotem = "a Fire totem is down", earthTotem = "an Earth totem is down",
-    waterTotem = "a Water totem is down", airTotem = "an Air totem is down",
 }
 
 local config
@@ -254,7 +251,15 @@ local function Picker(parent, title, width, height)
         self.list:SetItems(items)
     end
 
+    -- the rows again, ex: after a click changed which are selected
+    function p:Reload()
+        if not (self.source and self:IsShown()) then return end
+        self.rows = self.source()
+        self:Update()
+    end
+
     function p:Open(source)
+        self.source = source
         self.rows = source()
         self.search:SetText("")
         self:ClearAllPoints()
@@ -550,6 +555,10 @@ local function Summary(a)
     end
     return "usable" .. (a.anytime and ", no target needed" or "") .. cp .. at
 end
+local KindSummary = Summary
+Summary = function(a)
+    return KindSummary(a) .. (a.totems and (", with " .. table.concat(a.totems, " or ")) or "")
+end
 
 -- the debuff length the alert uses when its box is 0
 local function AutoDuration(a)
@@ -788,7 +797,7 @@ local function CreateConfig()
     -- the conditions, as in Buff Reminder: each check cycles off, hide while true, hide while false
     local condTitle = Label(edit, "Hide the icon while:", "GameFontHighlightSmall")
     condTitle:SetPoint("TOPLEFT", needLabel, "BOTTOMLEFT", 0, -16)
-    local condHint = Label(edit, "click to cycle: off, while true, |cffff4040while false|r", "GameFontDisableSmall")
+    local condHint = Label(edit, "click: off, yes, |cffff4040not|r", "GameFontDisableSmall")
     condHint:SetPoint("LEFT", condTitle, "RIGHT", 8, 0)
     local condChecks = {}
     for i, key in ipairs(OSA.CONDITIONS) do
@@ -819,8 +828,56 @@ local function CreateConfig()
         condChecks[key] = c
     end
 
+    -- the totems one of which must be down, ex: Flametongue Totem for Fire Nova. Shown when your
+    -- spellbook has totems, or the alert has some.
+    local totemPicker = Picker(f, "Totems: click to pick", 260, 300)
+    local function TotemRows()
+        local a = Selected()
+        local rows, chosen = {}, {}
+        for _, n in ipairs(a and a.totems or {}) do chosen[n:lower()] = true end
+        local names = OSA.BookTotems()
+        -- picked totems that aren't in the spellbook stay in the list, to take them off
+        for _, n in ipairs(a and a.totems or {}) do
+            if not OSA.Book()[n:lower()] then table.insert(names, n) end
+        end
+        for _, n in ipairs(names) do
+            local e = OSA.Book()[n:lower()]
+            table.insert(rows, {
+                name = n, text = n, spell = e and e.id,
+                icon = e and OSA.SpellIcon(e.id) or 134400,
+                selected = chosen[n:lower()],
+                onClick = function()
+                    local s = Selected()
+                    if not s then return end
+                    OSA.ToggleTotem(s, n)
+                    OSA.Changed()
+                end,
+            })
+        end
+        return rows
+    end
+    local totemLabel = Label(edit, "Only while my totem is down:", "GameFontHighlightSmall")
+    totemLabel:SetPoint("TOPLEFT", condTitle, "BOTTOMLEFT", 0, -80)
+    local totemButton = Button(edit, "Totems...", 80, function()
+        if totemPicker:IsShown() then totemPicker:Hide() return end
+        picker:Hide()
+        if f.looks then f.looks:Hide() end
+        totemPicker:Open(TotemRows)
+    end)
+    totemButton:SetPoint("LEFT", totemLabel, "RIGHT", 8, 0)
+    local totemText = Label(edit, "", "GameFontHighlightSmall")
+    totemText:SetPoint("LEFT", totemButton, "RIGHT", 8, 0)
+    totemText:SetPoint("RIGHT", edit, "RIGHT", -10, 0)
+    totemText:SetJustifyH("LEFT")
+    totemText:SetWordWrap(false)
+    Tooltip(totemButton, "Only while my totem is down", function()
+        local a = Selected()
+        return "The icon only shows while one of the totems you pick is down, ex: Flametongue Totem for "
+            .. "Fire Nova. Click a totem in the list to pick it, again to take it off. None picked = no "
+            .. "totem needed.\n\nPicked now: " .. (a and a.totems and table.concat(a.totems, ", ") or "none")
+    end)
+
     local soundLabel = Label(edit, "Sound:", "GameFontHighlightSmall")
-    soundLabel:SetPoint("TOPLEFT", condTitle, "BOTTOMLEFT", 0, -104)
     local soundNames = { "off" }
     for _, s in ipairs(OSA.SOUNDS) do table.insert(soundNames, s.name) end
     local sound = Cycle(edit, 100, function(dir)
@@ -992,6 +1049,7 @@ local function CreateConfig()
     local lookButton = Button(edit, "Look...", 90, function()
         if looks:IsShown() then looks:Hide() return end
         picker:Hide()
+        totemPicker:Hide()
         looks:Open()
     end)
     lookButton:SetPoint("LEFT", border, "RIGHT", 12, 0)
@@ -1122,6 +1180,18 @@ local function CreateConfig()
         lookButton:SetShown(a ~= nil and a.kind ~= "aura")
         if a and a.kind == "aura" then looks:Hide() end
         for _, w in ipairs(powerWidgets) do w:SetShown(castable) end
+        -- the totem row, for those with totems; the sound moves up into it when it's hidden
+        local totems = a ~= nil and (a.totems ~= nil or #OSA.BookTotems() > 0)
+        totemLabel:SetShown(totems)
+        totemButton:SetShown(totems)
+        totemText:SetShown(totems)
+        if not totems then totemPicker:Hide() end
+        soundLabel:ClearAllPoints()
+        soundLabel:SetPoint("TOPLEFT", condTitle, "BOTTOMLEFT", 0, totems and -104 or -82)
+        if a then
+            totemText:SetText(a.totems and table.concat(a.totems, ", ") or "|cff808080none|r")
+            totemPicker:Reload()
+        end
         -- an aura alert has no cooldown or length to show early by
         if a and a.kind == "aura" then
             earlyLabel:Hide()

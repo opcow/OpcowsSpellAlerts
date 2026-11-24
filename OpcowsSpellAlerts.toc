@@ -1,6 +1,6 @@
 ## Interface: 16001
 ## Title: Opcow's Spell Alerts
-## Version: 0.20.0
+## Version: 0.21.0
 ## Notes: Shows a spell's icon and plays a sound when it's usable, when a finisher has enough combo points, or when your debuff falls off the target.
 ## Author: Opcow
 ## X-Curse-Project-ID: 1806228

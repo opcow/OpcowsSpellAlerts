@@ -40,15 +40,10 @@ local DIM = 0.45
 -- the conditions an alert can be hidden by, as in Buff Reminder. Each alert's conds[key] is
 -- 0 = ignored, 1 = hide the icon while true, 2 = hide the icon while false.
 local CONDITIONS = { "dead", "instance", "party", "raid", "resting", "taxi", "combat", "mounted",
-    "target", "enemy", "friendly", "fireTotem", "earthTotem", "waterTotem", "airTotem" }
+    "target", "enemy", "friendly" }
 local DEFAULT_CONDS = { dead = 1, taxi = 1, mounted = 1 }
--- the totem conditions: [key] = { totem slot, element as spell descriptions name it }
-local TOTEMS = {
-    fireTotem = { FIRE_TOTEM_SLOT or 1, "fire" }, earthTotem = { EARTH_TOTEM_SLOT or 2, "earth" },
-    waterTotem = { WATER_TOTEM_SLOT or 3, "water" }, airTotem = { AIR_TOTEM_SLOT or 4, "air" },
-}
--- set below, the default for a totem condition from the spell's description, nil when unknown
-local TotemDefault
+-- your totems, see the totems section below
+local Totem = { SLOTS = 4, PAIR = 1, slot = {} }
 
 local issecretvalue = issecretvalue or function() return false end
 
@@ -71,14 +66,7 @@ local function Conds(a)
     if type(a.conds) ~= "table" then a.conds = {} end
     for _, k in ipairs(CONDITIONS) do
         local c = a.conds[k]
-        if c ~= 0 and c ~= 1 and c ~= 2 then
-            if TOTEMS[k] then
-                -- left unset until the description can be read
-                a.conds[k] = TotemDefault and TotemDefault(a, k) or nil
-            else
-                a.conds[k] = DEFAULT_CONDS[k] or 0
-            end
-        end
+        if c ~= 0 and c ~= 1 and c ~= 2 then a.conds[k] = DEFAULT_CONDS[k] or 0 end
     end
     return a.conds
 end
@@ -100,6 +88,17 @@ local function DB()
     end
     for _, a in ipairs(db.alerts) do
         Conds(a)
+        -- 0.20 and before had a check per totem element
+        a.conds.fireTotem, a.conds.earthTotem, a.conds.waterTotem, a.conds.airTotem = nil, nil, nil, nil
+        -- the totems one of which must be down, a list of spell names
+        if type(a.totems) == "table" then
+            for i = #a.totems, 1, -1 do
+                if type(a.totems[i]) ~= "string" or a.totems[i] == "" then table.remove(a.totems, i) end
+            end
+            if #a.totems == 0 then a.totems = nil end
+        else
+            a.totems = nil
+        end
         -- 0.7 and before saved when the sound last played
         a.soundAt = nil
         if not a.id then
@@ -255,17 +254,35 @@ local function AlertSpell(a)
     return e and e.id or nil
 end
 
--- spells such as Fire Nova that need a totem of the element down: "your Fire totem" in the
--- description of a spell that isn't itself a totem. Hide those while the totem isn't down.
-TotemDefault = function(a, k)
-    if not (C_Spell and C_Spell.GetSpellDescription) then return 0 end
+-- the totems in your spellbook, sorted names
+function Totem.Book()
+    local names = {}
+    for key, e in pairs(Book()) do
+        if key:find("totem", 1, true) then table.insert(names, e.name) end
+    end
+    table.sort(names)
+    return names
+end
+
+-- a spell such as Fire Nova that needs one of your totems down: the first time its description
+-- can be read, the totems from your spellbook it names become its totems, ex: "your Flametongue
+-- Totem". A spell that is itself a totem, or names none, gets none.
+function Totem.Auto(a)
+    if a.totemsChecked then return end
+    if not (C_Spell and C_Spell.GetSpellDescription) then a.totemsChecked = true return end
     local id = AlertSpell(a)
-    if not id then return nil end
+    if not id then return end
     local ok, d = pcall(C_Spell.GetSpellDescription, id)
     d = ok and Str(d)
-    if not d or d == "" then return nil end
-    if a.spell:lower():find("totem") then return 0 end
-    return d:lower():find(TOTEMS[k][2] .. " totem") and 2 or 0
+    if not d or d == "" then return end
+    a.totemsChecked = true
+    if a.totems or a.spell:lower():find("totem", 1, true) then return end
+    d = d:lower()
+    local found = {}
+    for _, name in ipairs(Totem.Book()) do
+        if d:find(name:lower(), 1, true) then table.insert(found, name) end
+    end
+    if #found > 0 then a.totems = found end
 end
 
 local function KeyOf(spellID)
@@ -334,18 +351,75 @@ local function UpdateStatus()
         local ok, _, kind = pcall(IsInInstance)
         if ok and not issecretvalue(kind) then status.instance = kind == "party" end
     end
-    if GetTotemInfo then
-        for k, t in pairs(TOTEMS) do
-            local ok, have, name = pcall(GetTotemInfo, t[1])
-            if ok and not issecretvalue(have) and not issecretvalue(name) then
-                status[k] = (have and name ~= nil and name ~= "") and true or false
+    Totem.ReadAll()
+end
+
+-- your totems: [slot] = the totem's name as the game gives it, nil = none. Read from GetTotemInfo
+-- when it can be; when the game hides it, a totem cast and the slot that changed with it are paired.
+-- the last totem cast { name, at }, and the last slot that changed unreadably { slot, at }
+
+-- reads a slot: true when the game said what's in it
+function Totem.Read(slot)
+    if not GetTotemInfo then return false end
+    local ok, have, name = pcall(GetTotemInfo, slot)
+    if not ok then return false end
+    if Bool(have) == false then Totem.slot[slot] = nil return true end
+    local n = Str(name)
+    if n then
+        Totem.slot[slot] = n ~= "" and n or nil
+        return true
+    end
+    return false
+end
+
+function Totem.ReadAll()
+    for slot = 1, Totem.SLOTS do Totem.Read(slot) end
+end
+
+-- PLAYER_TOTEM_UPDATE: a totem went down or went away in the slot
+function Totem.Changed(slot)
+    slot = Num(slot)
+    if not slot or Totem.Read(slot) then return end
+    if Totem.cast and GetTime() - Totem.cast.at <= Totem.PAIR then
+        Totem.slot[slot] = Totem.cast.name
+        Totem.cast = nil
+    else
+        -- no cast just now: it died or ran out, unless the cast comes right after
+        Totem.slot[slot] = nil
+        Totem.change = { slot = slot, at = GetTime() }
+    end
+end
+
+-- a spell of yours with "Totem" in its name was cast
+function Totem.Cast(name)
+    if Totem.change and GetTime() - Totem.change.at <= Totem.PAIR then
+        Totem.slot[Totem.change.slot] = name
+        Totem.change = nil
+    else
+        Totem.cast = { name = name, at = GetTime() }
+    end
+end
+
+-- true when one of the alert's totems is down, or it needs none. Names are matched from the
+-- start, so "Searing Totem" matches a "Searing Totem VII" the game may give.
+function Totem.Down(a)
+    Totem.Auto(a)
+    if not a.totems then return true end
+    for slot = 1, Totem.SLOTS do
+        local down = Totem.slot[slot] and Totem.slot[slot]:lower()
+        if down then
+            for _, want in ipairs(a.totems) do
+                want = want:lower()
+                if down:sub(1, #want) == want then return true end
             end
         end
     end
+    return false
 end
 
 -- true when one of the alert's conditions hides it
 local function Suppressed(a)
+    if not Totem.Down(a) then return true end
     local conds = Conds(a)
     for _, k in ipairs(CONDITIONS) do
         local v, c = status[k], conds[k]
@@ -2662,6 +2736,12 @@ frame:SetScript("OnEvent", function(_, event, ...)
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
         local _, _, spellID = ...
         OnCast(spellID)
+        local n = Num(spellID) and SpellName(spellID)
+        if n and n:lower():find("totem", 1, true) then Totem.Cast(n) end
+    elseif event == "PLAYER_TOTEM_UPDATE" then
+        Totem.Changed(...)
+    elseif event == "PLAYER_ENTERING_WORLD" then
+        Totem.ReadAll()
     elseif event == "PLAYER_TARGET_CHANGED" then
         -- casts on a target whose guid couldn't be read belong to the old target
         for _, byTarget in pairs(casts) do byTarget["?"] = nil end
@@ -2805,6 +2885,17 @@ function OSA.Probe(name)
         local s = seen[ev]
         Print(("  %s: %s"):format(ev, s and (s.count .. " seen, last: " .. s.last) or "not seen"))
     end
+    -- the totems: what the game says per slot, and what we think is down
+    local slots = {}
+    for slot = 1, Totem.SLOTS do
+        local text = "no GetTotemInfo"
+        if GetTotemInfo then
+            local ok, have, tname = pcall(GetTotemInfo, slot)
+            text = ok and ("have " .. Show(have) .. ", name " .. Show(tname)) or "error"
+        end
+        table.insert(slots, ("%d: %s, we say %s"):format(slot, text, Totem.slot[slot] or "none"))
+    end
+    Print("  totems " .. table.concat(slots, "; "))
     local function aura(n)
         for _, a in ipairs(DB().alerts) do
             if a.kind == "aura" and a.spell:lower() == n:lower() then return a end
@@ -2858,6 +2949,7 @@ local function Describe(i, a)
         text = text .. ", only while " .. table.concat(a.need, " or ") .. " is on the target"
             .. (a.anyone and " (anyone's)" or "") .. (Searching(a) and ", looking up spell ids" or "")
     end
+    if a.totems then text = text .. ", only while " .. table.concat(a.totems, " or ") .. " is down" end
     if a.kind ~= "debuff" and a.kind ~= "aura" then
         if a.atPower then text = text .. ", at " .. a.atPower .. "+ energy" end
         if a.early then text = text .. ", shows " .. a.early .. " sec before its cooldown ends" end
@@ -2892,6 +2984,8 @@ local HELP = {
     "/osa add <debuff> on - while the debuff is on the target, any name or spell id, ex: /osa add Frostbite on",
     "/osa need <n> <debuff, debuff...|off> - usable or combo alert n shows only while one of these "
         .. "debuffs is on the target, ex: /osa need 1 Frostbite, Frost Nova",
+    "/osa totem <n> <totem, totem...|off> - alert n shows only while one of these totems of yours is "
+        .. "down, ex: /osa totem 1 Flametongue Totem",
     "/osa anyone <n> on|off - count anyone's debuff, not only yours, for an on-the-target alert or one "
         .. "that needs debuffs",
     "/osa list - your alerts",
@@ -2961,6 +3055,34 @@ function OSA.SetNeed(a, text)
     a.need = #names > 0 and names or nil
     -- ids seen are for the old names
     a.ids = nil
+end
+
+-- sets the totems one of which must be down, a list of names, ex: "Flametongue Totem"; your
+-- spellbook's spelling is used when it has the totem, and an empty list clears it
+function OSA.SetTotems(a, list)
+    local names, seen = {}, {}
+    for _, name in ipairs(list or {}) do
+        name = name:match("^%s*(.-)%s*$")
+        local e = name ~= "" and Book()[name:lower()]
+        name = e and e.name or name
+        if name ~= "" and not seen[name:lower()] then
+            seen[name:lower()] = true
+            table.insert(names, name)
+        end
+    end
+    a.totems = #names > 0 and names or nil
+    -- chosen by hand, so the description isn't read for them
+    a.totemsChecked = true
+end
+
+-- adds or removes one totem
+function OSA.ToggleTotem(a, name)
+    local list, found = {}, false
+    for _, n in ipairs(a.totems or {}) do
+        if n:lower() == name:lower() then found = true else table.insert(list, n) end
+    end
+    if not found then table.insert(list, name) end
+    OSA.SetTotems(a, list)
 end
 
 -- adds an alert for while a debuff is on the target: any name, ex: Frostbite, which isn't in the
@@ -3150,6 +3272,19 @@ SlashCmdList.OPCOWSSPELLALERTS = function(msg)
         end
         OSA.SetNeed(a, value:lower() == "off" and "" or value)
         Print(Describe(tonumber(n), a))
+    elseif cmd == "totem" or cmd == "totems" then
+        local n, value = rest:match("^(%d+)%s+(.+)$")
+        local a = Alert(n)
+        if not (a and value) then
+            Print("/osa totem <n> <totem, totem...|off>, n is the alert's number in /osa list.")
+            return
+        end
+        local list = {}
+        if value:lower() ~= "off" then
+            for part in value:gmatch("[^,;]+") do table.insert(list, part) end
+        end
+        OSA.SetTotems(a, list)
+        Print(Describe(tonumber(n), a))
     elseif cmd == "hide" then
         local n, key, mode = rest:match("^(%d+)%s+(%a+)%s+(%a+)$")
         local a = Alert(n)
@@ -3285,5 +3420,7 @@ OSA.SIZE = SIZE
 OSA.POWER_MODES = POWER_MODES
 OSA.CONDITIONS = CONDITIONS
 OSA.Conds = Conds
+OSA.BookTotems = Totem.Book
+OSA.Totem = Totem
 OSA.AuraIcon = AuraIcon
 OSA.Searching = Searching

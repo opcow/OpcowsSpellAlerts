@@ -19,7 +19,8 @@
 - **Show for a few seconds** when it comes on, fading in and out, ex: Sprint coming off cooldown.
 - **Change its look** while your energy, the target's health or your combo points compare to numbers, with conditions joined by "and" and "or": dim it, make it glow, grey it, or tint it red, green or blue. Ex: Slice and Dice glowing at 5 combo points unless the target is under 10% health, or Shank dimmed above 80 energy, when it would waste energy. It works in combat too, when the game hides your energy and the target's health from addons.
 - **Skip needing a target.** By default usable alerts wait for combat or an enemy target, so spells that are almost always usable don't sit on screen.
-- **Hide while** a condition is true or false: dead, in an instance, party, raid, resting, on a flight path, in combat, mounted, have a target, enemy target, friendly target, or a Fire, Earth, Water or Air totem is down.
+- **Hide while** a condition is true or false: dead, in an instance, party, raid, resting, on a flight path, in combat, mounted, have a target, enemy target, or friendly target.
+- **Only while my totem is down**: pick totems from your spellbook, ex: Flametongue Totem for Fire Nova.
 - Play its own **sound**: ping, raid warning, ready check, alarm, or none.
 - Have its own **icon size**, square or not: a wide icon keeps its picture's shape and crops its top and bottom.
 - Sit **on your target's nameplate**, above it or to its left or right, and follow it.
