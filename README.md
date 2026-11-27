@@ -16,6 +16,7 @@ Each alert can also:
 - Only show while one of a list of debuffs is on your target, so related alerts become one icon, ex: Ice Lance while Frostbite or Frost Nova is on.
 - Skip needing a target. By default usable alerts wait for combat or an enemy target, and combo point alerts for an enemy target.
 - Hide while a condition is true or false, ex: out of combat, or while your target isn't friendly.
+- Hide on the wrong target, ex: Exorcism on anything but undead and demons, or whenever the spell can't be cast on your target, out of range too.
 - Play its own sound and have its own icon size, square or not, and border.
 - Sit on your target's nameplate, above it or to its left or right.
 

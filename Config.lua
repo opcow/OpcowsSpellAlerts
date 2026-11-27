@@ -827,6 +827,33 @@ local function CreateConfig()
         end)
         condChecks[key] = c
     end
+    -- in the grid's free spot after the conditions: on or off, not three ways
+    local n = #OSA.CONDITIONS
+    -- clicks cycle off, wrong target, can't cast (wrong target or out of range)
+    local wrongTarget = Check(edit, "Wrong target", function() end)
+    wrongTarget:SetPoint("TOPLEFT", condTitle, "BOTTOMLEFT", (n % 4) * 96 - 4, -2 - math.floor(n / 4) * 22)
+    wrongTarget:SetHitRectInsets(0, -60, 0, 0)
+    function wrongTarget:SetState(s)
+        self.state = s
+        self:SetChecked(s ~= nil)
+        self.label:SetText(s == "range" and "Can't cast" or "Wrong target")
+    end
+    wrongTarget:SetScript("OnClick", function()
+        local a = Selected()
+        if not a then return end
+        a.wrongTarget = a.wrongTarget == nil and true or a.wrongTarget == true and "range" or nil
+        OSA.Changed()
+    end)
+    Tooltip(wrongTarget, "Wrong target", function(self)
+        local s = self.state
+        local text = s == nil and "Ignored."
+            or s == "range" and "Hide the icon while the spell can't be cast on your target: it's the wrong "
+                .. "kind of target (ex: Exorcism on a beast), it's out of range, or you have none."
+            or "Hide the icon while your target isn't one the spell can be cast on, or you have none, ex: "
+                .. "Exorcism on anything but undead and demons. Out of range still shows."
+        return text .. "\n\nThe game hides creature types from addons, so this asks the game whether the "
+            .. "spell could be cast on the target.\n|cff808080Click: off, wrong target, can't cast.|r"
+    end)
 
     -- the totems one of which must be down, ex: Flametongue Totem for Fire Nova. Shown when your
     -- spellbook has totems, or the alert has some.
@@ -1175,6 +1202,8 @@ local function CreateConfig()
             needAnyone:SetChecked(a.anyone and true or false)
         end
         anytime:SetShown(castable)
+        wrongTarget:SetShown(a ~= nil and a.kind ~= "aura")
+        if a then wrongTarget:SetState(a.wrongTarget) end
         anyone:SetShown(a ~= nil and a.kind == "aura")
         -- an on-the-target alert's icon is the game's aura button, which the rules can't draw on
         lookButton:SetShown(a ~= nil and a.kind ~= "aura")

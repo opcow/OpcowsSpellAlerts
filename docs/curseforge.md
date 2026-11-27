@@ -21,6 +21,7 @@
 - **Skip needing a target.** By default usable alerts wait for combat or an enemy target, so spells that are almost always usable don't sit on screen.
 - **Hide while** a condition is true or false: dead, in an instance, party, raid, resting, on a flight path, in combat, mounted, have a target, enemy target, or friendly target.
 - **Only while my totem is down**: pick totems from your spellbook, ex: Flametongue Totem for Fire Nova.
+- **Hide on the wrong target**, ex: Exorcism on anything but undead and demons, or whenever the spell can't be cast on your target, out of range too.
 - Play its own **sound**: ping, raid warning, ready check, alarm, or none.
 - Have its own **icon size**, square or not: a wide icon keeps its picture's shape and crops its top and bottom.
 - Sit **on your target's nameplate**, above it or to its left or right, and follow it.

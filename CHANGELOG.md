@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.22.0
+
+### Added
+
+- **Wrong target** under "Hide the icon while": the icon hides while your target isn't one the spell can be cast on, or you have none, ex: Exorcism on anything but undead and demons. The game hides creature types from addons, so it asks the game whether the spell could be cast on the target. Click it again for **Can't cast**, which also hides the icon while the target is out of range. Also `/osa wrongtarget <n> on|range|off`.
+
 ## 0.21.0
 
 ### Changed

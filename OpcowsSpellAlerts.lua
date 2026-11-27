@@ -110,6 +110,8 @@ local function DB()
         if type(a.height) ~= "number" or a.height < 10 or a.height > 200 then a.height = nil end
         -- its icon's border, nil = a thin black edge
         if a.border ~= "action" and a.border ~= "thick" and a.border ~= "none" then a.border = nil end
+        -- hidden while the target isn't one the spell can be cast on
+        if a.wrongTarget ~= true and a.wrongTarget ~= "range" then a.wrongTarget = nil end
         -- an aura alert's spell ids seen on the target, as a set
         if type(a.ids) == "table" then
             for id in pairs(a.ids) do
@@ -417,9 +419,26 @@ function Totem.Down(a)
     return false
 end
 
+-- a.wrongTarget: true when the target isn't one the spell can be cast on (ex: Exorcism on a beast),
+-- or there's none. The game hides creature types, but its range check answers nil for a target the
+-- spell can't be cast on and false when it's out of range. a.wrongTarget = "range" (can't cast) also
+-- counts out of range. A hidden answer is never nil, so it shows.
+function OSA.WrongTarget(a)
+    if not a.wrongTarget or a.kind == "aura" then return false end
+    if not UnitExists("target") then return true end
+    local f = C_Spell and C_Spell.IsSpellInRange or IsSpellInRange
+    if not f then return false end
+    local ok, r = pcall(f, AlertSpell(a) or a.spell, "target")
+    if not ok or issecretvalue(r) then return false end
+    if r == nil then return true end
+    -- the old IsSpellInRange answers 0 for out of range
+    return a.wrongTarget == "range" and (r == false or r == 0)
+end
+
 -- true when one of the alert's conditions hides it
 local function Suppressed(a)
     if not Totem.Down(a) then return true end
+    if OSA.WrongTarget(a) then return true end
     local conds = Conds(a)
     for _, k in ipairs(CONDITIONS) do
         local v, c = status[k], conds[k]
@@ -2950,6 +2969,10 @@ local function Describe(i, a)
             .. (a.anyone and " (anyone's)" or "") .. (Searching(a) and ", looking up spell ids" or "")
     end
     if a.totems then text = text .. ", only while " .. table.concat(a.totems, " or ") .. " is down" end
+    if a.wrongTarget and a.kind ~= "aura" then
+        text = text .. (a.wrongTarget == "range" and ", only while it can be cast on the target (in range)"
+            or ", only on a target it can be cast on")
+    end
     if a.kind ~= "debuff" and a.kind ~= "aura" then
         if a.atPower then text = text .. ", at " .. a.atPower .. "+ energy" end
         if a.early then text = text .. ", shows " .. a.early .. " sec before its cooldown ends" end
@@ -2986,6 +3009,8 @@ local HELP = {
         .. "debuffs is on the target, ex: /osa need 1 Frostbite, Frost Nova",
     "/osa totem <n> <totem, totem...|off> - alert n shows only while one of these totems of yours is "
         .. "down, ex: /osa totem 1 Flametongue Totem",
+    "/osa wrongtarget <n> on|range|off - alert n hides while the target isn't one its spell can be cast "
+        .. "on, ex: Exorcism on anything but undead and demons; range also hides it out of range",
     "/osa anyone <n> on|off - count anyone's debuff, not only yours, for an on-the-target alert or one "
         .. "that needs debuffs",
     "/osa list - your alerts",
@@ -3252,6 +3277,18 @@ SlashCmdList.OPCOWSSPELLALERTS = function(msg)
             return
         end
         a.anytime = value == "on" or nil
+        Print(Describe(tonumber(n), a))
+    elseif cmd == "wrongtarget" then
+        local n, value = rest:match("^(%d+)%s+(%a+)$")
+        local a = Alert(n)
+        value = value and value:lower()
+        if not (a and a.kind ~= "aura" and (value == "on" or value == "range" or value == "off")) then
+            Print("/osa wrongtarget <n> on|range|off: hide the icon while the target isn't one the spell can "
+                .. "be cast on (ex: Exorcism on a beast); range also while it's out of range. n is the "
+                .. "alert's number in /osa list.")
+            return
+        end
+        a.wrongTarget = value == "range" and "range" or value == "on" or nil
         Print(Describe(tonumber(n), a))
     elseif cmd == "anyone" then
         local n, value = rest:match("^(%d+)%s+(%a+)$")
