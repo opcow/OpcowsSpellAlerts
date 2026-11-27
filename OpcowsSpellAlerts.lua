@@ -1362,6 +1362,7 @@ local function CheckBars(old)
     for _, b in ipairs(old) do
         if type(b) == "table" and type(b.left) == "number" and type(b.top) == "number" and type(b.cells) == "table" then
             local bar, used = { left = b.left, top = b.top, cells = {} }, {}
+            if b.grow == true then bar.grow = true end
             if b.plate == true then
                 bar.plate = true
                 bar.px = type(b.px) == "number" and b.px or nil
@@ -1612,6 +1613,48 @@ function OSA.SetPlate(a, on)
     ApplyLayout()
 end
 
+-- icons sliding to a new spot in a growing set: [key] = { bar, fx, fy (from), tx, ty (to), at }
+OSA.slides = {}
+OSA.SLIDE = 0.2
+
+-- where a slide is at now, eased out, and true when it's there
+function OSA.SlideAt(s, now)
+    local t = math.min(1, math.max(0, (now - s.at) / OSA.SLIDE))
+    t = 1 - (1 - t) * (1 - t)
+    return s.fx + (s.tx - s.fx) * t, s.fy + (s.ty - s.fy) * t, t >= 1
+end
+
+-- put icon f at its place p in the set, sliding there from where it was when animate is set
+function OSA.Slide(f, p, bar, anchor, now, animate)
+    local s = OSA.slides[p.key]
+    if not (animate and s and s.bar == bar) then
+        s = { bar = bar, fx = p.x, fy = p.y, tx = p.x, ty = p.y, at = now - OSA.SLIDE }
+    elseif s.tx ~= p.x or s.ty ~= p.y then
+        -- from wherever it is, even mid-slide
+        local x, y = OSA.SlideAt(s, now)
+        s = { bar = bar, fx = x, fy = y, tx = p.x, ty = p.y, at = now }
+    end
+    OSA.slides[p.key] = s
+    local x, y, done = OSA.SlideAt(s, now)
+    f.slide = not done and { s = s, anchor = anchor } or nil
+    f:ClearAllPoints()
+    f:SetPoint("CENTER", anchor, "CENTER", x, y)
+end
+
+function OSA.Grows(a)
+    local bar = BarOf(a)
+    return bar and bar.grow or false
+end
+
+-- the set alert a is in grows: its showing icons fill its spots in the alerts' order
+function OSA.SetGrow(a, on)
+    SyncBars()
+    local bar = BarOf(a)
+    if not bar then return end
+    bar.grow = on and true or nil
+    ApplyLayout()
+end
+
 function OSA.PlateSideOf(a)
     local bar = BarOf(a)
     return bar and bar.side or "top"
@@ -1638,7 +1681,35 @@ local function PlaceIcons(bar, showing)
     local g = Geometry(bar)
     local shape = Shape(bar)
     local out = {}
-    if shape == "row" or shape == "column" then
+    if bar.grow then
+        -- the placed icons are spots, in the alerts' order. The showing icons take them in that
+        -- order, so they fill the first spots and close up when one goes.
+        local rank = {}
+        for i, a in ipairs(DB().alerts) do rank[AlertKey(a)] = i end
+        local spots, list = {}, {}
+        for _, cell in ipairs(bar.cells) do
+            table.insert(spots, cell)
+            if showing[cell.key] then table.insert(list, cell) end
+        end
+        local function Before(p, q)
+            local rp, rq = rank[p.key] or math.huge, rank[q.key] or math.huge
+            if rp ~= rq then return rp < rq end
+            return p.r < q.r or (p.r == q.r and p.c < q.c)
+        end
+        table.sort(spots, Before)
+        table.sort(list, Before)
+        local slotOf = {}
+        for i, cell in ipairs(spots) do slotOf[cell.key] = i end
+        for i, cell in ipairs(list) do
+            local spot = spots[i]
+            -- the icon centred in the spot's column and row, lined up as the spot's icon was
+            local pw, ph = KeyPitches(cell.key)
+            local cw, rh = g.cw[spot.c], g.rh[spot.r]
+            table.insert(out, { key = cell.key, slot = slotOf[cell.key],
+                x = g.cx[spot.c] + cw / 2 + (spot.ha or 0) * (cw - pw) / 2 - g.w / 2,
+                y = -g.ry[spot.r] - rh / 2 - (spot.va or 0) * (rh - ph) / 2 + g.h / 2 })
+        end
+    elseif shape == "row" or shape == "column" then
         local list, total = {}, 0
         for _, cell in ipairs(bar.cells) do
             if showing[cell.key] then
@@ -2279,6 +2350,10 @@ local function MakeIcon(i)
     f.tex:SetAllPoints()
     f.count = f:CreateFontString(nil, "OVERLAY", "NumberFontNormalLarge")
     f.count:SetPoint("BOTTOMRIGHT", -3, 3)
+    -- unlocked, a growing set's icons show their spot's number
+    f.slot = f:CreateFontString(nil, "OVERLAY", "NumberFontNormal")
+    f.slot:SetPoint("TOPLEFT", 3, -3)
+    f.slot:SetTextColor(1, 0.82, 0)
     -- shown early: a shade over the icon and the seconds left on the cooldown
     f.shade = f:CreateTexture(nil, "OVERLAY")
     f.shade:SetAllPoints(f.tex)
@@ -2600,6 +2675,8 @@ function OSA.Update()
     local shown = 0
     -- [alert] = true for the aura buttons placed this time, the rest are faded out
     local liveShown = {}
+    -- the keys placed this time: an icon that went away pops back in at its spot, without a slide
+    local placedKeys = {}
     for bi, bar in ipairs(db.bars) do
         for _, p in ipairs(PlaceIcons(bar, showing)) do
             local s = showing[p.key]
@@ -2612,8 +2689,9 @@ function OSA.Update()
             f:SetSize(w, h)
             f.tex:SetTexCoord(IconCoords(w, h))
             StyleBorder(f.border, BorderOf(a))
-            f:ClearAllPoints()
-            f:SetPoint("CENTER", anchors[bi], "CENTER", p.x, p.y)
+            -- in a growing set, an icon whose spot changed slides there
+            OSA.Slide(f, p, bar, anchors[bi], now, bar.grow and not db.unlocked and not dragging)
+            placedKeys[p.key] = true
             f:EnableMouse(db.unlocked and true or false)
             f.tex:SetTexture(a.kind == "aura" and AuraIcon(a) or id and SpellIcon(id) or 134400)
             f.queued:SetShown(s.queued and true or false)
@@ -2627,6 +2705,7 @@ function OSA.Update()
             -- alert doesn't count)
             local cp = (a.kind == "combo" or (a.cp or 0) > 0) and Num(ComboPoints())
             f.count:SetText(cp and tostring(cp) or "")
+            f.slot:SetText(db.unlocked and p.slot and tostring(p.slot) or "")
             local left = not preview and early[a] and early[a] - GetTime()
             f.shade:SetShown(left and true or false)
             -- tenths under 3 seconds, unless the Whole seconds option is on
@@ -2669,12 +2748,16 @@ function OSA.Update()
     for i = shown + 1, #icons do
         icons[i]:Hide()
         icons[i].flash = nil
+        icons[i].slide = nil
         icons[i].live = nil
         icons[i].key, icons[i].bar = nil, nil
         if icons[i]:GetParent() ~= holder then pcall(icons[i].SetParent, icons[i], holder) end
     end
     for a, l in pairs(live) do
         if not liveShown[a] and l.holder then l.holder:SetAlpha(0) end
+    end
+    for k in pairs(OSA.slides) do
+        if not placedKeys[k] then OSA.slides[k] = nil end
     end
 end
 
@@ -2786,6 +2869,13 @@ frame:SetScript("OnUpdate", function(_, dt)
     for _, f in ipairs(icons) do
         local fl = f.flash
         if fl then (f.live or f):SetAlpha(fl.alpha * FlashAlpha(fl.len, now - fl.at)) end
+        local sl = f.slide
+        if sl and f:IsShown() then
+            local x, y, done = OSA.SlideAt(sl.s, now)
+            f:ClearAllPoints()
+            f:SetPoint("CENTER", sl.anchor, "CENTER", x, y)
+            if done then f.slide = nil end
+        end
     end
     elapsed = elapsed + dt
     if elapsed < TICK or not holder then return end
@@ -3037,6 +3127,7 @@ local HELP = {
     "/osa size <size> - every icon's size, 0 = " .. SIZE,
     "/osa size <n> <size|off> - alert n's own icon size, off = the size above",
     "/osa plate <n> on|off|above|left|right - put alert n's icon, and the icons snapped to it, on your target's nameplate",
+    "/osa grow <n> on|off - alert n's set fills its spots in the list's order, so showing icons close up",
     "/osa height <n> <size|off> - alert n's own icon height, the picture is cropped to fit, off = square",
     "/osa border <n> action|thin|thick|none - alert n's icon border: the action bar's frame, a thin or thick black edge, or none",
     "/osa lock - lock or unlock the icons. Unlocked, drag an icon to move its set, Shift-drag to pull "
@@ -3399,6 +3490,18 @@ SlashCmdList.OPCOWSSPELLALERTS = function(msg)
         local where = ({ top = "above", left = "left of", right = "right of" })[OSA.PlateSideOf(a)]
         Print(a.spell .. (value ~= "off" and ("'s set is " .. where .. " your target's nameplate, or where it "
             .. "was while the target has none.") or "'s set is back in its own spot."))
+    elseif cmd == "grow" then
+        local n, value = rest:match("^(%d+)%s+(%a+)$")
+        local a = Alert(n)
+        value = value and value:lower()
+        if not (a and (value == "on" or value == "off")) then
+            Print("/osa grow <n> on|off: alert n's set fills its spots in the list's order, so the showing "
+                .. "icons close up. n is the alert's number in /osa list.")
+            return
+        end
+        OSA.SetGrow(a, value == "on")
+        Print(a.spell .. (value == "on" and "'s set grows: its icons take its first free spots, in the list's order."
+            or "'s set keeps each icon in its own spot."))
     elseif cmd == "lock" or cmd == "unlock" then
         db.unlocked = not db.unlocked or nil
         Print(db.unlocked and "unlocked: drag an icon to move its set, Shift-drag to pull it out on its own."

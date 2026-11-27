@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.23.0
+
+### Added
+
+- **Grow**, per set, next to "On the target's nameplate": the set fills up instead of keeping each icon in its own spot. The spots are where its icons are placed, taken in the list's order, so the first icon to show goes in the spot of the set's highest alert in the list, the next one in the following spot, and when one goes, the ones after it slide back. Icons slide smoothly to their new spot. Move up and Move down order the spots; unlocked, each icon shows its spot's number. In combat, an icon the game shows or hides for the addon keeps its spot, so it can leave a gap. Also `/osa grow <n> on|off`.
+
 ## 0.22.0
 
 ### Added

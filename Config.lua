@@ -1055,6 +1055,21 @@ local function CreateConfig()
         .. "dragging them then.\n\nNameplates must be on in the game's settings (V). Shift-drag an icon "
         .. "out of its set first to put only that one on the nameplate.")
 
+    -- the set the icon's in fills its spots in the list's order
+    local grow = Check(edit, "Grow", function(v)
+        local a = Selected()
+        if a then OSA.SetGrow(a, v) end
+        OSA.Changed()
+    end)
+    grow:SetPoint("LEFT", plateSide, "RIGHT", 12, 0)
+    grow:SetHitRectInsets(0, -40, 0, 0)
+    Tooltip(grow, "Grow", "The icon's set fills up instead of keeping each icon in its own spot. The spots "
+        .. "are where its icons are placed, taken in the list's order: the first icon to show goes in the "
+        .. "spot of the set's highest alert in the list, the next in the following spot, and when one goes, "
+        .. "the ones after it slide back. Use Move up and Move down to order the spots. Unlocked, each icon "
+        .. "shows its spot's number.\n\nIn combat, an icon the game shows or hides for the addon keeps its "
+        .. "spot, so it can leave a gap.")
+
     -- the icon's border
     local borderLabel = Label(edit, "Border:", "GameFontHighlightSmall")
     borderLabel:SetPoint("BOTTOMLEFT", up, "TOPLEFT", 2, 12)
@@ -1093,7 +1108,7 @@ local function CreateConfig()
         return text
     end)
 
-    local editWidgets = { lookButton, borderLabel, border,plate, plateSide, iconBy, iconHeight, icon, name, on, whenLabel, when, cpLabel, cp, cpHint, condTitle, condHint, soundLabel, sound,
+    local editWidgets = { lookButton, borderLabel, border, plate, plateSide, grow, iconBy, iconHeight, icon, name, on, whenLabel, when, cpLabel, cp, cpHint, condTitle, condHint, soundLabel, sound,
         play, flashLabel, flashBox, flashHint, earlyLabel, earlyBox, earlyHint, up, down, iconSizeLabel, iconSize,
         iconSizeHint }
     -- shown only for alerts that need the spell castable
@@ -1251,6 +1266,7 @@ local function CreateConfig()
             plate:SetChecked(OSA.OnPlate(a) and true or false)
             plateSide:SetText(({ top = "Above", left = "Left", right = "Right" })[OSA.PlateSideOf(a)])
             plateSide:SetEnabled(OSA.OnPlate(a) and true or false)
+            grow:SetChecked(OSA.Grows(a) and true or false)
             border:SetText(OSA.BORDER_NAMES[a.border or "thin"])
             lookButton:SetText(a.looks and ("Look (%d)..."):format(#a.looks) or "Look...")
             ShowNumber(iconHeight)

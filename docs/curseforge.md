@@ -29,6 +29,7 @@
 ## Icons
 
 - Each icon gets a thin black edge, or pick the action bar's thin dark frame, a thick black edge, or none, per alert.
+- **Grow**, per set: the icons that are showing fill the set's first spots, in the list's order, and slide over to close up when one goes.
 - Unlock to move them. Drag an icon to move its set, **Shift-drag** to pull it out on its own, and drop it touching other icons to snap to them.
 - **Test** shows every icon for 3 seconds, so you can place them out of combat.
 
