@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.24.0
+
+### Added
+
+- Drag an alert up or down the list in the options window to reorder it. A gold line shows where it goes, and the list scrolls when you drag past its top or bottom. Move up and Move down still work.
+- In a growing set, a new icon comes out from under the others: the icons after it slide off and uncover it, and one that shows at the end slides out from under the icon before it. An icon that goes is covered the same way: the icon after it slides over it, or, at the end, it slides back under the icon before it.
+
 ## 0.23.0
 
 ### Added

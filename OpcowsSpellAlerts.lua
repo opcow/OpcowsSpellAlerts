@@ -1624,10 +1624,64 @@ function OSA.SlideAt(s, now)
     return s.fx + (s.tx - s.fx) * t, s.fy + (s.ty - s.fy) * t, t >= 1
 end
 
+-- new icons in a growing set come out from under the others: one taking a spot another icon is
+-- leaving stays put under it while it slides off, one at the end slides out from under the icon
+-- in the spot before it. Sets p.under (how deep: deeper further along) and p.from (where it starts).
+function OSA.Reveal(places, bar)
+    local function Same(x1, y1, x2, y2) return math.abs(x1 - x2) < 1 and math.abs(y1 - y2) < 1 end
+    local leaving = {}
+    for _, p in ipairs(places) do
+        local s = OSA.slides[p.key]
+        if s and s.bar == bar and not Same(s.tx, s.ty, p.x, p.y) then leaving[#leaving + 1] = s end
+    end
+    for _, p in ipairs(places) do
+        local s = OSA.slides[p.key]
+        if p.slot and not (s and s.bar == bar) then
+            p.under = p.slot
+            local vacated
+            for _, l in ipairs(leaving) do
+                if Same(l.tx, l.ty, p.x, p.y) then vacated = true end
+            end
+            if not vacated then
+                local prev
+                for _, q in ipairs(places) do
+                    if q.slot and q.slot < p.slot and (not prev or q.slot > prev.slot) then prev = q end
+                end
+                if prev then p.from = { x = prev.x, y = prev.y } end
+            end
+        end
+    end
+end
+
+-- icons going from a growing set, drawn under the rest for a slide: [key] = { a, bar, anchor, s, alpha, dim }
+OSA.ghosts = {}
+
+-- an icon whose slide s ended its time in the set: it stays put while another slides over it,
+-- or slides back under the icon in the spot before it. Nil when there's nothing to go under.
+function OSA.Going(s, placed, now)
+    local x, y = OSA.SlideAt(s, now)
+    local function Same(x1, y1, x2, y2) return math.abs(x1 - x2) < 1 and math.abs(y1 - y2) < 1 end
+    local to, prev
+    for k, o in pairs(OSA.slides) do
+        if placed[k] and o.bar == s.bar then
+            if Same(o.tx, o.ty, x, y) and not Same(o.fx, o.fy, x, y) then to = { x = x, y = y } end
+            if o.slot and o.slot < s.slot and (not prev or o.slot > prev.slot) then prev = o end
+        end
+    end
+    to = to or prev and { x = prev.tx, y = prev.ty }
+    if not to then return nil end
+    return { a = s.a, bar = s.bar, anchor = s.anchor, alpha = s.alpha, dim = s.dim,
+        s = { bar = s.bar, fx = x, fy = y, tx = to.x, ty = to.y, at = now } }
+end
+
 -- put icon f at its place p in the set, sliding there from where it was when animate is set
 function OSA.Slide(f, p, bar, anchor, now, animate)
     local s = OSA.slides[p.key]
-    if not (animate and s and s.bar == bar) then
+    if animate and p.under and not (s and s.bar == bar) then
+        -- new: under the others while they uncover it, or sliding out from under one
+        local from = p.from or p
+        s = { bar = bar, fx = from.x, fy = from.y, tx = p.x, ty = p.y, at = now, under = p.under }
+    elseif not (animate and s and s.bar == bar) then
         s = { bar = bar, fx = p.x, fy = p.y, tx = p.x, ty = p.y, at = now - OSA.SLIDE }
     elseif s.tx ~= p.x or s.ty ~= p.y then
         -- from wherever it is, even mid-slide
@@ -2678,7 +2732,10 @@ function OSA.Update()
     -- the keys placed this time: an icon that went away pops back in at its spot, without a slide
     local placedKeys = {}
     for bi, bar in ipairs(db.bars) do
-        for _, p in ipairs(PlaceIcons(bar, showing)) do
+        local places = PlaceIcons(bar, showing)
+        local animate = bar.grow and not db.unlocked and not dragging
+        if animate then OSA.Reveal(places, bar) end
+        for _, p in ipairs(places) do
             local s = showing[p.key]
             local a, on, secret, dim, flash = s.a, s.on, s.secret, s.dim, s.flash
             shown = shown + 1
@@ -2690,8 +2747,14 @@ function OSA.Update()
             f.tex:SetTexCoord(IconCoords(w, h))
             StyleBorder(f.border, BorderOf(a))
             -- in a growing set, an icon whose spot changed slides there
-            OSA.Slide(f, p, bar, anchors[bi], now, bar.grow and not db.unlocked and not dragging)
+            OSA.Slide(f, p, bar, anchors[bi], now, animate)
             placedKeys[p.key] = true
+            -- a new icon is drawn under the ones uncovering it until it's out
+            local sl = OSA.slides[p.key]
+            -- what a going icon needs to be drawn while it's covered
+            sl.a, sl.anchor, sl.slot, sl.dim = a, anchors[bi], p.slot, dim and true or false
+            local under = sl and sl.under and now - sl.at < OSA.SLIDE and sl.under
+            f:SetFrameLevel(holder:GetFrameLevel() + (under and math.max(1, 9 - under) or 10))
             f:EnableMouse(db.unlocked and true or false)
             f.tex:SetTexture(a.kind == "aura" and AuraIcon(a) or id and SpellIcon(id) or 134400)
             f.queued:SetShown(s.queued and true or false)
@@ -2742,6 +2805,49 @@ function OSA.Update()
                 end
                 liveShown[a] = true
             end
+            -- a Blizzard button, or an icon the game shows or hides, isn't drawn going
+            sl.alpha = not l and on ~= nil and (flash and alpha * FlashAlpha(a.flash, now - flash) or alpha) or nil
+            f:Show()
+        end
+    end
+    -- icons that went from a growing set: covered by the one sliding into their spot, or sliding
+    -- back under the one before them, then gone
+    for k, s in pairs(OSA.slides) do
+        if not placedKeys[k] then
+            OSA.slides[k] = nil
+            if s.alpha and s.slot and s.bar.grow and not db.unlocked and not dragging and not preview then
+                OSA.ghosts[k] = OSA.Going(s, placedKeys, now)
+            end
+        end
+    end
+    for k, gh in pairs(OSA.ghosts) do
+        if placedKeys[k] or now - gh.s.at >= OSA.SLIDE or not gh.bar.grow or db.unlocked or preview then
+            OSA.ghosts[k] = nil
+        else
+            shown = shown + 1
+            local f = icons[shown] or MakeIcon(shown)
+            local a = gh.a
+            local id = AlertSpell(a)
+            local w, h = KeyDims(k)
+            f.key, f.bar, f.flash, f.live = nil, nil, nil, nil
+            f:SetSize(w, h)
+            f.tex:SetTexCoord(IconCoords(w, h))
+            StyleBorder(f.border, BorderOf(a))
+            f.tex:SetTexture(a.kind == "aura" and AuraIcon(a) or id and SpellIcon(id) or 134400)
+            f.tex:SetDesaturated(gh.dim)
+            f.queued:Hide()
+            f.shade:Hide()
+            f.count:SetText("")
+            f.slot:SetText("")
+            f.timer:SetText("")
+            ApplyLooks(f, a, true)
+            f:EnableMouse(false)
+            f:SetAlpha(gh.alpha)
+            local x, y, done = OSA.SlideAt(gh.s, now)
+            f:ClearAllPoints()
+            f:SetPoint("CENTER", gh.anchor, "CENTER", x, y)
+            f.slide = not done and { s = gh.s, anchor = gh.anchor } or nil
+            f:SetFrameLevel(holder:GetFrameLevel() + 1)
             f:Show()
         end
     end
@@ -2755,9 +2861,6 @@ function OSA.Update()
     end
     for a, l in pairs(live) do
         if not liveShown[a] and l.holder then l.holder:SetAlpha(0) end
-    end
-    for k in pairs(OSA.slides) do
-        if not placedKeys[k] then OSA.slides[k] = nil end
     end
 end
 

@@ -192,8 +192,69 @@ local function ScrollList(parent, width, height, onDrop)
             GameTooltip:Show()
         end)
         row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        -- with box.onReorder set, a row can be dragged to another place in the list
+        row.index = i
+        row:RegisterForDrag("LeftButton")
+        row:SetScript("OnDragStart", function(self)
+            if box.onReorder and not GetCursorInfo() then box:StartReorder(self.index) end
+        end)
+        row:SetScript("OnDragStop", function() box:StopReorder() end)
         box.rows[i] = row
         return row
+    end
+
+    -- dragging a row: a gold line shows where it goes, and the list scrolls near its edges
+    local line = child:CreateTexture(nil, "OVERLAY")
+    line:SetColorTexture(1, 0.82, 0, 1)
+    line:SetHeight(2)
+    line:Hide()
+    local count = 0
+
+    -- the gap the cursor is nearest, 0 (before the first row) to count (after the last)
+    local function Gap()
+        local _, cy = GetCursorPosition()
+        local top = child:GetTop()
+        if not (cy and top) then return nil end
+        local y = top - cy / child:GetEffectiveScale()
+        return math.max(0, math.min(count, math.floor(y / ROW_HEIGHT + 0.5)))
+    end
+
+    local function Follow()
+        local g = Gap()
+        if not g then return end
+        box.gap = g
+        line:ClearAllPoints()
+        line:SetPoint("LEFT", child, "TOPLEFT", 0, -g * ROW_HEIGHT)
+        line:SetPoint("RIGHT", child, "TOPRIGHT", 0, -g * ROW_HEIGHT)
+        line:Show()
+        -- scroll while the cursor is above or below the list
+        local _, cy = GetCursorPosition()
+        cy = cy / sf:GetEffectiveScale()
+        local top, bottom = sf:GetTop(), sf:GetBottom()
+        if top and bottom then
+            local step = cy > top - 4 and -4 or cy < bottom + 4 and 4 or 0
+            if step ~= 0 then
+                local v = math.max(0, math.min(sf:GetVerticalScrollRange(), sf:GetVerticalScroll() + step))
+                sf:SetVerticalScroll(v)
+            end
+        end
+    end
+
+    function box:StartReorder(from)
+        self.dragFrom, self.gap = from, nil
+        GameTooltip:Hide()
+        box:SetScript("OnUpdate", Follow)
+    end
+
+    function box:StopReorder()
+        local from, g = self.dragFrom, self.gap
+        self.dragFrom, self.gap = nil, nil
+        box:SetScript("OnUpdate", nil)
+        line:Hide()
+        if not (from and g) then return end
+        -- the gap counts the dragged row too, so after it means one less once it's taken out
+        local to = g < from and g + 1 or g
+        if to ~= from and self.onReorder then self.onReorder(from, to) end
     end
 
     -- items = { { text, icon, selected, onClick, onRemove, spell }, ... }
@@ -208,6 +269,7 @@ local function ScrollList(parent, width, height, onDrop)
             row.remove:SetShown(item.onRemove ~= nil)
             row:Show()
         end
+        count = #items
         for i = #items + 1, #self.rows do
             self.rows[i]:Hide()
         end
@@ -649,6 +711,21 @@ local function CreateConfig()
 
     local list = ScrollList(f, WIDTH - 28, 170, Drop)
     list:SetPoint("TOPLEFT", 14, -92)
+    -- drag a row up or down the list, the selection goes with it
+    list.onReorder = function(from, to)
+        local alerts = OSA.DB().alerts
+        local a = table.remove(alerts, from)
+        if not a then return end
+        table.insert(alerts, to, a)
+        if selected == from then
+            selected = to
+        elseif selected and from < selected and to >= selected then
+            selected = selected - 1
+        elseif selected and from > selected and to <= selected then
+            selected = selected + 1
+        end
+        OSA.Changed()
+    end
 
     -- the selected alert -------------------------------------------------------------------------
     local edit = Box(f)
@@ -1004,9 +1081,9 @@ local function CreateConfig()
         OSA.Changed()
     end)
     down:SetPoint("LEFT", up, "RIGHT", 4, 0)
-    Tooltip(down, "List order", "Moves it in this list. Where the icons show is set by dragging them while "
+    Tooltip(down, "List order", "Moves it in this list, or drag it up or down the list. Where the icons show is set by dragging them while "
         .. "they're unlocked.")
-    Tooltip(up, "List order", "Moves it in this list. Where the icons show is set by dragging them while "
+    Tooltip(up, "List order", "Moves it in this list, or drag it up or down the list. Where the icons show is set by dragging them while "
         .. "they're unlocked.")
 
     local iconSizeLabel = Label(edit, "Size:", "GameFontHighlightSmall")

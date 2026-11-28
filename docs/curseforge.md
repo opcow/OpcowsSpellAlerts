@@ -29,7 +29,7 @@
 ## Icons
 
 - Each icon gets a thin black edge, or pick the action bar's thin dark frame, a thick black edge, or none, per alert.
-- **Grow**, per set: the icons that are showing fill the set's first spots, in the list's order, and slide over to close up when one goes.
+- **Grow**, per set: the icons that are showing fill the set's first spots, in the list's order, and slide over to close up when one goes. A new icon comes out from under the others, and one that goes is covered by them.
 - Unlock to move them. Drag an icon to move its set, **Shift-drag** to pull it out on its own, and drop it touching other icons to snap to them.
 - **Test** shows every icon for 3 seconds, so you can place them out of combat.
 
@@ -37,7 +37,7 @@
 
 1. Type `/osa`, or click the minimap button or the addon compartment, to open the options window. Shift-click either to unlock or lock the icons.
 2. Click **Add spell...**, or drag a spell from your spellbook onto the list.
-3. Pick when it alerts, then set anything else you like.
+3. Pick when it alerts, then set anything else you like. Drag alerts up or down the list to reorder them.
 
 Everything can be set in the options window. `/osa help` lists the slash commands.
 

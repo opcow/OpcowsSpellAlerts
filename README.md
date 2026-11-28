@@ -19,7 +19,7 @@ Each alert can also:
 - Hide on the wrong target, ex: Exorcism on anything but undead and demons, or whenever the spell can't be cast on your target, out of range too.
 - Play its own sound and have its own icon size, square or not, and border.
 - Sit on your target's nameplate, above it or to its left or right.
-- Grow with its set: the showing icons fill the set's first spots in the list's order, and slide over to close up when one goes.
+- Grow with its set: the showing icons fill the set's first spots in the list's order, and slide over to close up when one goes. A new icon comes out from under the others, and one that goes is covered by them.
 
 Unlock the icons to move them. Drag an icon to move its set, Shift-drag to pull it out on its own, and drop it touching other icons to snap to them.
 
